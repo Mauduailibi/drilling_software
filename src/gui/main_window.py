@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import QMainWindow, QTabWidget, QWidget, QVBoxLayout, QLabel
 from PySide6.QtCore import Qt
+from features.well_path.view import WellPathView
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -13,10 +14,7 @@ class MainWindow(QMainWindow):
         self.setup_tabs()
 
     def setup_tabs(self):
-        tab_well = QWidget()
-        layout_well = QVBoxLayout(tab_well)
-
-        layout_well.addWidget(QLabel("Coming soon..."), alignment=Qt.AlignCenter)
+        tab_well = WellPathView()
         self.tabs.addTab(tab_well, "Well Path Correction")
 
         tab_torque = QWidget()
