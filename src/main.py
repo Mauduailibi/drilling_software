@@ -1,8 +1,8 @@
-import sys
-import os
 
-os.environ["QT_QPA_PLATFORM"] = "xcb"
-os.environ["QT_API"] = "pyside6"
+# import os
+#
+# os.environ["QT_QPA_PLATFORM"] = "xcb"
+# os.environ["QT_API"] = "pyside6"
 # Descomente a linha abaixo se a tela ficar preta (força renderização por CPU)
 # os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
 
