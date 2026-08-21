@@ -480,6 +480,8 @@ def down_tension(Data, l1, R) -> list:
 
 
 LITHOLOGY_COLORS = {
+    "Shale": "#8c8c8c",
+    "Siltstone": "#bdb76b",
     "Sandstone": "#d8b365",
     "Limestone": "#f6e8c3",
     "Dolomite": "#5ab4ac",
@@ -501,7 +503,7 @@ def dogleg_severity_deg_per_30m(curvature: float) -> float:
 def inclination_factor(angle_deg: float, params: dict) -> float:
     reduction = float(params["inclination_reduction"])
     exponent = float(params["inclination_exponent"])
-    lower = float(params["min_inclination_factor"])
+    lower = max(0.85, float(params["min_inclination_factor"]))
     normalized = min(max(angle_deg / 90.0, 0.0), 1.0)
     factor = 1.0 - reduction * (normalized ** exponent)
     return float(max(lower, min(1.0, factor)))
@@ -510,7 +512,7 @@ def inclination_factor(angle_deg: float, params: dict) -> float:
 def dls_factor(dls_deg_per_30m: float, params: dict) -> float:
     reduction = float(params["dls_reduction"])
     exponent = float(params["dls_exponent"])
-    lower = float(params["min_dls_factor"])
+    lower = max(0.50, float(params["min_dls_factor"]))
     reference = float(params["reference_dls_deg_per_30m"])
     normalized = min(max(dls_deg_per_30m / reference, 0.0), 1.0)
     factor = 1.0 - reduction * (normalized ** exponent)
@@ -530,7 +532,7 @@ def wob_transfer_factor(angle_deg: float, dls_deg_per_30m: float, params: dict) 
 
 def wob_factor(wob_effective: float, params: dict) -> float:
     optimal_wob = float(params["optimal_wob"])
-    lower = float(params["min_wob_factor"])
+    lower = max(0.90, float(params["min_wob_factor"]))
     exponent = float(params["wob_factor_exponent"])
     ratio = max(wob_effective / optimal_wob, 0.0)
     factor = min(1.0, ratio ** exponent)
@@ -547,7 +549,7 @@ def local_contact_force_per_length(Data, angle_deg: float, curvature: float, wob
 def torque_factor(cumulative_torque: float, params: dict) -> float:
     reduction = float(params["torque_reduction"])
     exponent = float(params["torque_exponent"])
-    lower = float(params["min_torque_factor"])
+    lower = max(0.90, float(params["min_torque_factor"]))
     limit = float(params["torque_limit"])
     normalized = min(max(cumulative_torque / limit, 0.0), 1.0)
     factor = 1.0 - reduction * (normalized ** exponent)

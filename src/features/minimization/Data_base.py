@@ -66,6 +66,7 @@ class _MechanicalDataSet:
         self.d_int_heavy = diameters_heavypipe[1]
         self.lp = lp
         self.max = max
+        self.min_l1 = 100.0
         self.min_radius = radius[0]
         self.max_radius = radius[1]
         self.angle_limit_deg = 52.0
@@ -88,7 +89,7 @@ class _MechanicalDataSet:
             self.P0, self.P3, self.ro_fluid, self.ro_command, self.ro_drillpipe, self.ro_heavypipe,
             self.µ, self.z, self.area_command, self.area_drill, self.area_heavy,
             self.d_ext_drill, self.d_int_drill, self.d_ext_command, self.d_int_command,
-            self.d_ext_heavy, self.d_int_heavy, self.lp, self.max,
+            self.d_ext_heavy, self.d_int_heavy, self.lp, self.max, self.min_l1,
             self.min_radius, self.max_radius, self.angle_limit_deg, self.l1_step, self.radius_step,
         )
 
@@ -97,23 +98,31 @@ class lithology:
     """Simple lithology descriptor holding only the ROP value."""
     def __init__(self, rop: float | None = None) -> None:
         self.rop = rop
-    def sandstone(self, rop: int):
-        self.rop = rop
-    def limestone(self, rop: int):
-        self.rop = rop
-    def dolomite(self, rop: int):
-        self.rop = rop
-    def evaporite(self, rop: int):
-        self.rop = rop
+    def shale(self, rop: int): self.rop = rop
+    def siltstone(self, rop: int): self.rop = rop
+    def sandstone(self, rop: int): self.rop = rop
+    def limestone(self, rop: int): self.rop = rop
+    def dolomite(self, rop: int): self.rop = rop
+    def evaporite(self, rop: int): self.rop = rop
 
 
 class _BaseMesh:
-    def __init__(self, sandstone: list, limestone: list, dolomite: list, evaporite: list):
+    def __init__(
+        self,
+        sandstone: list | None = None,
+        limestone: list | None = None,
+        dolomite: list | None = None,
+        evaporite: list | None = None,
+        shale: list | None = None,
+        siltstone: list | None = None,
+    ):
         self.intervals = {
-            "Sandstone": self._normalize_intervals(sandstone, "Sandstone"),
-            "Limestone": self._normalize_intervals(limestone, "Limestone"),
-            "Dolomite": self._normalize_intervals(dolomite, "Dolomite"),
-            "Evaporite": self._normalize_intervals(evaporite, "Evaporite"),
+            "Shale": self._normalize_intervals([] if shale is None else shale, "Shale"),
+            "Siltstone": self._normalize_intervals([] if siltstone is None else siltstone, "Siltstone"),
+            "Sandstone": self._normalize_intervals([] if sandstone is None else sandstone, "Sandstone"),
+            "Limestone": self._normalize_intervals([] if limestone is None else limestone, "Limestone"),
+            "Dolomite": self._normalize_intervals([] if dolomite is None else dolomite, "Dolomite"),
+            "Evaporite": self._normalize_intervals([] if evaporite is None else evaporite, "Evaporite"),
         }
         self.segments = []
         for lithology_name, intervals in self.intervals.items():
@@ -141,25 +150,25 @@ class _BaseMesh:
 class DataSetTimeMixin:
     def _init_drilling_time_parameters(self, drilling_time_parameters: dict | None = None):
         params = {
-            "trajectory_step": 5.0,
-            "min_inclination_factor": 0.40,
-            "inclination_reduction": 0.22,
-            "inclination_exponent": 1.20,
+            "trajectory_step": 10.0,
+            "min_inclination_factor": 0.85,
+            "inclination_reduction": 0.15,
+            "inclination_exponent": 1.00,
             "reference_dls_deg_per_30m": 3.0,
-            "min_dls_factor": 0.45,
-            "dls_reduction": 0.28,
-            "dls_exponent": 1.10,
+            "min_dls_factor": 0.50,
+            "dls_reduction": 0.50,
+            "dls_exponent": 1.00,
             "surface_wob": 1.60e5,
             "optimal_wob": 1.80e5,
-            "min_wob_factor": 0.35,
+            "min_wob_factor": 0.90,
             "wob_factor_exponent": 1.00,
             "drag_inclination_coeff": 0.55,
             "drag_dls_coeff": 0.22,
             "wob_transfer_exponent": 1.00,
             "torque_limit": 1.20e4,
-            "min_torque_factor": 0.40,
-            "torque_reduction": 0.25,
-            "torque_exponent": 1.10,
+            "min_torque_factor": 0.90,
+            "torque_reduction": 0.10,
+            "torque_exponent": 1.00,
             "bit_radius": None,
             "mesh_plot_margin_x": 100.0,
             "mesh_plot_alpha": 0.25,
@@ -203,15 +212,24 @@ class DataSet(_MechanicalDataSet, DataSetTimeMixin):
 class mesh(_BaseMesh):
     def __init__(
         self,
-        sandstone: list,
-        limestone: list,
-        dolomite: list,
-        evaporite: list,
+        sandstone: list | None = None,
+        limestone: list | None = None,
+        dolomite: list | None = None,
+        evaporite: list | None = None,
+        shale: list | None = None,
+        siltstone: list | None = None,
         rop_values: dict | None = None,
         default_rop: float | None = None,
     ):
-        super().__init__(sandstone=sandstone, limestone=limestone, dolomite=dolomite, evaporite=evaporite)
-        self.rop_values = {"Sandstone": None, "Limestone": None, "Dolomite": None, "Evaporite": None}
+        super().__init__(
+            sandstone=sandstone,
+            limestone=limestone,
+            dolomite=dolomite,
+            evaporite=evaporite,
+            shale=shale,
+            siltstone=siltstone,
+        )
+        self.rop_values = {"Shale": None, "Siltstone": None, "Sandstone": None, "Limestone": None, "Dolomite": None, "Evaporite": None}
         if rop_values is not None:
             for key, value in rop_values.items():
                 if key not in self.rop_values:

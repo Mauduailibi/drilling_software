@@ -54,7 +54,8 @@ def _scan_candidates(Data):
     if key in _MECH_CACHE:
         return _MECH_CACHE[key]
 
-    l1_values = np.arange(100.0, Data.max + Data.l1_step, Data.l1_step)
+    min_l1 = float(getattr(Data, "min_l1", 100.0))
+    l1_values = np.arange(min_l1, Data.max + Data.l1_step, Data.l1_step)
     r_values = np.arange(Data.min_radius, Data.max_radius + Data.radius_step, Data.radius_step)
 
     candidates = []
@@ -169,7 +170,7 @@ def drilling_time_breakdown(Data, Mesh, l1: float, R: float, ds_target: float | 
         curvature = float(element["curvature"])
         ds = float(element["length"])
 
-        f_inc = ax.inclination_factor(angle_deg, params)
+        f_inc_raw = ax.inclination_factor(angle_deg, params)
         f_dls = ax.dls_factor(dls, params)
 
         wob_transfer = ax.wob_transfer_factor(angle_deg, dls, params)
@@ -181,7 +182,12 @@ def drilling_time_breakdown(Data, Mesh, l1: float, R: float, ds_target: float | 
         cumulative_torque += torque_increment
         f_torque = ax.torque_factor(cumulative_torque, params)
 
-        rop_effective = rop_base * f_inc * f_dls * f_wob * f_torque
+        section = element["section"]
+        f_dls_active = f_dls < (1.0 - ax.EPS)
+        f_inc = 1.0 if f_dls_active else f_inc_raw
+        f_rop_total = f_inc * f_dls * f_wob * f_torque
+
+        rop_effective = rop_base * f_rop_total
         if rop_effective <= 0:
             raise ValueError("The effective ROP became non-positive.")
 
@@ -192,7 +198,7 @@ def drilling_time_breakdown(Data, Mesh, l1: float, R: float, ds_target: float | 
         rows.append(
             {
                 "id": index,
-                "section": element["section"],
+                "section": section,
                 "depth_mid_m": depth_mid,
                 "element_length_m": ds,
                 "inclination_deg": angle_deg,
@@ -206,9 +212,12 @@ def drilling_time_breakdown(Data, Mesh, l1: float, R: float, ds_target: float | 
                 "torque_increment_Nm": torque_increment,
                 "cumulative_torque_Nm": cumulative_torque,
                 "f_inclination": f_inc,
+                "f_inclination_raw": f_inc_raw,
                 "f_dls": f_dls,
+                "f_dls_active": f_dls_active,
                 "f_wob": f_wob,
                 "f_torque": f_torque,
+                "f_rop_total": f_rop_total,
                 "rop_effective_mph": rop_effective,
                 "time_h": time_h,
             }

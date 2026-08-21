@@ -53,7 +53,7 @@ from features.minimization.plot import (
 )
 
 
-LITHOLOGIES = ["Sandstone", "Limestone", "Dolomite", "Evaporite"]
+LITHOLOGIES = ["Shale", "Siltstone", "Sandstone", "Limestone", "Dolomite", "Evaporite"]
 
 
 def build_default_data():
@@ -66,19 +66,26 @@ def build_default_data():
         "mesh_plot_alpha": 0.45,
     }
     operational_parameters = {
-        "trip_fixed_time_h": 2.0,
-        "trip_time_per_meter_h": 0.0025,
+        "trip_fixed_time_h": 1.0,
+        "trip_speed_drillpipe_mph": 500.0,
+        "trip_speed_heavypipe_mph": 250.0,
+        "trip_speed_command_mph": 150.0,
         "bit_run_length_limit_m": 900.0,
-        "bit_run_time_limit_h": 60.0,
+        "bit_run_time_limit_h": None,
         "routine_stop_every_m": 500.0,
         "routine_stop_time_h": 0.5,
-        "min_spacing_between_bit_trips_m": 150.0,
         "fatigue_dls_threshold_deg_per_30m": 3.0,
         "fatigue_dls_multiplier": 0.30,
         "fatigue_torque_ratio_threshold": 0.75,
         "fatigue_torque_multiplier": 0.35,
-        "abrupt_transition_threshold": 0.18,
-        "abrupt_transition_extra_wear": 0.30,
+        "bit_trip_on_lithology_change": True,
+        "operation_merge_distance_m": 10.0,
+        "casing_connection_length_m": 9.0,
+        "casing_connection_time_h": 0.10,
+        "casing_trip_speed_mph": 300.0,
+        "casing_logging_time_h": 5.0,
+        "cement_pumping_time_h": 2.5,
+        "cement_curing_time_h": 12.0,
         "casing_events": [
             {
                 "depth_m": 2000.0,
@@ -107,6 +114,7 @@ def build_default_data():
     )
     data.l1_step = 10.0
     data.radius_step = 50.0
+    data.min_l1 = 100.0
     return data, operational_parameters
 
 
@@ -398,6 +406,7 @@ class MinimizationView(QWidget):
         self.p0_input = QLineEdit("0, 0")
         self.p3_input = QLineEdit("1000, 3000")
         self.max_l1 = self.spin(2300, 1, 100000, 1)
+        self.min_l1 = self.spin(100, 1, 100000, 1)
         self.min_radius = self.spin(100, 1, 100000, 1)
         self.max_radius = self.spin(600, 1, 100000, 1)
         self.l1_step = self.spin(10, 0.1, 10000, 1)
@@ -406,6 +415,7 @@ class MinimizationView(QWidget):
         form.addRow("P0 (x, y)", self.p0_input)
         form.addRow("P3 target (x, y)", self.p3_input)
         form.addRow("Max L1 (m)", self.max_l1)
+        form.addRow("Min L1 (m)", self.min_l1)
         form.addRow("Min radius (m)", self.min_radius)
         form.addRow("Max radius (m)", self.max_radius)
         form.addRow("L1 step (m)", self.l1_step)
@@ -636,6 +646,7 @@ class MinimizationView(QWidget):
         data.l1_step = self.l1_step.value()
         data.radius_step = self.radius_step.value()
         data.angle_limit_deg = self.angle_limit.value()
+        data.min_l1 = self.min_l1.value()
 
         intervals = {name: [] for name in LITHOLOGIES}
         rop_values_by_lithology = {}
@@ -649,12 +660,14 @@ class MinimizationView(QWidget):
             if not np.isclose(rop_values_by_lithology[lithology], rop):
                 raise ValueError(f"Current mesh model accepts one ROP per lithology. Check {lithology}.")
 
-        rop_values = {name: rop_values_by_lithology.get(name, 10.0) for name in LITHOLOGIES}
+        rop_values = {name: rop_values_by_lithology[name] for name in LITHOLOGIES if name in rop_values_by_lithology}
         geological_mesh = mesh(
             sandstone=intervals["Sandstone"],
             limestone=intervals["Limestone"],
             dolomite=intervals["Dolomite"],
             evaporite=intervals["Evaporite"],
+            shale=intervals["Shale"],
+            siltstone=intervals["Siltstone"],
             rop_values=rop_values,
         )
 

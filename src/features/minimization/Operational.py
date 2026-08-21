@@ -17,26 +17,32 @@ from features.minimization.Minimal import (
 
 
 DEFAULT_OPERATIONAL_PARAMETERS = {
-    "trip_fixed_time_h": 2.0,
-    "trip_time_per_meter_h": 0.0025,
+    "trip_fixed_time_h": 1.0,
+    "trip_speed_drillpipe_mph": 500.0,
+    "trip_speed_heavypipe_mph": 250.0,
+    "trip_speed_command_mph": 150.0,
     "bit_run_length_limit_m": 900.0,
-    "bit_run_time_limit_h": 60.0,
-    "min_spacing_between_bit_trips_m": 150.0,
+    "bit_run_time_limit_h": None,
     "routine_stop_every_m": 500.0,
     "routine_stop_time_h": 0.5,
     "fatigue_dls_threshold_deg_per_30m": 3.0,
     "fatigue_dls_multiplier": 0.30,
     "fatigue_torque_ratio_threshold": 0.75,
     "fatigue_torque_multiplier": 0.35,
-    "abrupt_transition_threshold": 0.18,
-    "abrupt_transition_extra_wear": 0.30,
-    "transition_short_stop_time_h": 0.75,
-    "transition_short_stop_instead_of_trip": False,
-    "reset_bit_run_on_casing": True,
+    "bit_trip_on_lithology_change": True,
+    "operation_merge_distance_m": 10.0,
+    "casing_connection_length_m": 9.0,
+    "casing_connection_time_h": 0.10,
+    "casing_trip_speed_mph": 300.0,
+    "casing_logging_time_h": 5.0,
+    "cement_pumping_time_h": 2.5,
+    "cement_curing_time_h": 12.0,
     "casing_events": [],
     "lithology_wear_factors": {
-        "Sandstone": 1.00,
-        "Limestone": 1.12,
+        "Shale": 0.95,
+        "Siltstone": 1.00,
+        "Sandstone": 1.05,
+        "Limestone": 1.15,
         "Dolomite": 1.25,
         "Evaporite": 0.75,
         "Undefined": 1.00,
@@ -104,6 +110,23 @@ def get_operational_parameters(Data=None, operational_parameters: dict | None = 
     wear_factors.update(params.get("lithology_wear_factors", {}))
     params["lithology_wear_factors"] = wear_factors
     params["casing_events"] = _normalize_casing_events(params.get("casing_events", []))
+
+    positive_keys = [
+        "trip_fixed_time_h",
+        "trip_speed_drillpipe_mph",
+        "trip_speed_heavypipe_mph",
+        "trip_speed_command_mph",
+        "operation_merge_distance_m",
+        "casing_connection_length_m",
+        "casing_connection_time_h",
+        "casing_trip_speed_mph",
+        "casing_logging_time_h",
+        "cement_pumping_time_h",
+        "cement_curing_time_h",
+    ]
+    for key in positive_keys:
+        if float(params[key]) <= 0.0:
+            raise ValueError(f"'{key}' must be positive.")
     return params
 
 
@@ -174,9 +197,60 @@ def selected_trajectory_mechanical_table(
     print("")
 
 
-def trip_time_from_measured_depth(measured_depth_m: float, params: dict) -> float:
+def pipe_trip_breakdown_from_measured_depth(Data, l1: float, R: float, measured_depth_m: float, params: dict) -> dict:
     depth = max(float(measured_depth_m), 0.0)
-    return float(params["trip_fixed_time_h"] + params["trip_time_per_meter_h"] * (depth + depth))
+    config = ax.validate_configuration(Data, l1, R)
+
+    command_length_m = min(float(config["lc"]), depth)
+    remaining_depth_m = max(depth - command_length_m, 0.0)
+    heavypipe_length_m = min(float(Data.lp), remaining_depth_m)
+    drillpipe_length_m = max(remaining_depth_m - heavypipe_length_m, 0.0)
+
+    one_way_time_h = (
+        drillpipe_length_m / float(params["trip_speed_drillpipe_mph"])
+        + heavypipe_length_m / float(params["trip_speed_heavypipe_mph"])
+        + command_length_m / float(params["trip_speed_command_mph"])
+    )
+    total_time_h = float(params["trip_fixed_time_h"] + 2.0 * one_way_time_h)
+
+    return {
+        "measured_depth_m": float(depth),
+        "drillpipe_length_m": float(drillpipe_length_m),
+        "heavypipe_length_m": float(heavypipe_length_m),
+        "command_length_m": float(command_length_m),
+        "one_way_time_h": float(one_way_time_h),
+        "added_time_h": float(total_time_h),
+    }
+
+
+def trip_time_from_measured_depth(measured_depth_m: float, params: dict, Data=None, l1: float | None = None, R: float | None = None) -> float:
+    if Data is not None and l1 is not None and R is not None:
+        return pipe_trip_breakdown_from_measured_depth(Data, l1, R, measured_depth_m, params)["added_time_h"]
+    depth = max(float(measured_depth_m), 0.0)
+    return float(params["trip_fixed_time_h"] + 2.0 * (depth / float(params["trip_speed_drillpipe_mph"])))
+
+
+def casing_cementing_breakdown_from_depth(casing_depth_m: float, params: dict) -> dict:
+    depth = max(float(casing_depth_m), 0.0)
+    connection_length_m = float(params["casing_connection_length_m"])
+    number_of_connections = int(np.ceil(depth / connection_length_m)) if depth > 0.0 else 0
+    connection_time_h = number_of_connections * float(params["casing_connection_time_h"])
+    casing_trip_time_h = depth / float(params["casing_trip_speed_mph"])
+    logging_time_h = float(params["casing_logging_time_h"])
+    cement_pumping_time_h = float(params["cement_pumping_time_h"])
+    cement_curing_time_h = float(params["cement_curing_time_h"])
+    total_time_h = connection_time_h + casing_trip_time_h + logging_time_h + cement_pumping_time_h + cement_curing_time_h
+
+    return {
+        "casing_depth_m": float(depth),
+        "number_of_connections": int(number_of_connections),
+        "connection_time_h": float(connection_time_h),
+        "casing_trip_time_h": float(casing_trip_time_h),
+        "logging_time_h": float(logging_time_h),
+        "cement_pumping_time_h": float(cement_pumping_time_h),
+        "cement_curing_time_h": float(cement_curing_time_h),
+        "added_time_h": float(total_time_h),
+    }
 
 
 def _bit_wear_increment(
@@ -203,17 +277,9 @@ def _bit_wear_increment(
         torque_excess = 0.0
     torque_multiplier = 1.0 + float(params["fatigue_torque_multiplier"]) * torque_excess
 
-    abrupt_transition = False
-    if previous_lithology is not None and lithology != previous_lithology:
-        previous_factor = float(params["lithology_wear_factors"].get(previous_lithology, 1.0))
-        current_factor = float(params["lithology_wear_factors"].get(lithology, 1.0))
-        if (current_factor - previous_factor) >= float(params["abrupt_transition_threshold"]):
-            abrupt_transition = True
-
+    lithology_changed = previous_lithology is not None and lithology != previous_lithology
     wear = ds * wear_factor * dls_multiplier * torque_multiplier
-    if abrupt_transition:
-        wear *= 1.0 + float(params["abrupt_transition_extra_wear"])
-    return float(wear), abrupt_transition
+    return float(wear), lithology_changed
 
 
 def operational_time_breakdown(
@@ -246,6 +312,8 @@ def operational_time_breakdown(
     previous_lithology = None
     previous_tvd_m = float(Data.P0[1])
     pending_casing_events = deepcopy(params["casing_events"])
+    merge_distance_m = float(params.get("operation_merge_distance_m", 30.0))
+    last_bit_reset_measured_depth_m = None
 
     for element, row in zip(elements, rows):
         ds = float(row["element_length_m"])
@@ -255,28 +323,49 @@ def operational_time_breakdown(
         drilled_since_routine_m += ds
         base_time_since_bit_trip_h += float(row["time_h"])
 
-        wear_increment, abrupt_transition = _bit_wear_increment(row, params, torque_reference, previous_lithology)
+        wear_increment, _ = _bit_wear_increment(row, params, torque_reference, previous_lithology)
         equivalent_bit_run_m += wear_increment
+        lithology_changed = previous_lithology is not None and row["lithology"] != previous_lithology
+        bit_was_reset_this_element = False
 
         while pending_casing_events and previous_tvd_m < pending_casing_events[0]["depth_m"] <= depth_end_m:
             casing_event = pending_casing_events.pop(0)
-            added_time_h = float(casing_event["fixed_time_h"])
+            casing_breakdown = casing_cementing_breakdown_from_depth(casing_event["depth_m"], params)
+            pipe_trip_breakdown = {
+                "added_time_h": 0.0,
+                "drillpipe_length_m": 0.0,
+                "heavypipe_length_m": 0.0,
+                "command_length_m": 0.0,
+                "one_way_time_h": 0.0,
+            }
             if casing_event["include_trip"]:
-                added_time_h += trip_time_from_measured_depth(measured_depth_m, params)
+                pipe_trip_breakdown = pipe_trip_breakdown_from_measured_depth(Data, l1, R, measured_depth_m, params)
+            added_time_h = float(casing_event["fixed_time_h"]) + float(pipe_trip_breakdown["added_time_h"]) + float(casing_breakdown["added_time_h"])
             events.append(
                 {
                     "category": "casing_cement",
-                    "cause": casing_event["name"],
+                    "cause": f"{casing_event['name']} with bit change",
                     "depth_tvd_m": float(casing_event["depth_m"]),
                     "measured_depth_m": float(measured_depth_m),
                     "added_time_h": float(added_time_h),
+                    "pipe_trip_time_h": float(pipe_trip_breakdown["added_time_h"]),
+                    "drillpipe_length_m": float(pipe_trip_breakdown["drillpipe_length_m"]),
+                    "heavypipe_length_m": float(pipe_trip_breakdown["heavypipe_length_m"]),
+                    "command_length_m": float(pipe_trip_breakdown["command_length_m"]),
+                    "casing_connections": int(casing_breakdown["number_of_connections"]),
+                    "casing_connection_time_h": float(casing_breakdown["connection_time_h"]),
+                    "casing_trip_time_h": float(casing_breakdown["casing_trip_time_h"]),
+                    "logging_time_h": float(casing_breakdown["logging_time_h"]),
+                    "cement_pumping_time_h": float(casing_breakdown["cement_pumping_time_h"]),
+                    "cement_curing_time_h": float(casing_breakdown["cement_curing_time_h"]),
                 }
             )
             total_casing_time_h += float(added_time_h)
-            if bool(params["reset_bit_run_on_casing"]):
-                equivalent_bit_run_m = 0.0
-                base_time_since_bit_trip_h = 0.0
-                drilled_since_last_bit_trip_m = 0.0
+            equivalent_bit_run_m = 0.0
+            base_time_since_bit_trip_h = 0.0
+            drilled_since_last_bit_trip_m = 0.0
+            bit_was_reset_this_element = True
+            last_bit_reset_measured_depth_m = float(measured_depth_m)
 
         while drilled_since_routine_m >= float(params["routine_stop_every_m"]):
             routine_time_h = float(params["routine_stop_time_h"])
@@ -292,48 +381,61 @@ def operational_time_breakdown(
             total_routine_time_h += routine_time_h
             drilled_since_routine_m -= float(params["routine_stop_every_m"])
 
-        can_trigger_bit_trip = drilled_since_last_bit_trip_m >= float(params["min_spacing_between_bit_trips_m"])
         reached_run_limit = equivalent_bit_run_m >= float(params["bit_run_length_limit_m"])
-        reached_time_limit = base_time_since_bit_trip_h >= float(params["bit_run_time_limit_h"])
+        bit_run_time_limit_h = params.get("bit_run_time_limit_h")
+        reached_time_limit = False if bit_run_time_limit_h is None else base_time_since_bit_trip_h >= float(bit_run_time_limit_h)
 
-        if abrupt_transition and bool(params["transition_short_stop_instead_of_trip"]):
-            added_time_h = float(params["transition_short_stop_time_h"])
-            events.append(
-                {
-                    "category": "transition_stop",
-                    "cause": f"Short stop due to abrupt transition to {row['lithology']}",
-                    "depth_tvd_m": float(depth_end_m),
-                    "measured_depth_m": float(measured_depth_m),
-                    "added_time_h": added_time_h,
-                }
-            )
-            total_transition_time_h += added_time_h
-            abrupt_transition = False
+        recent_bit_reset_nearby = (
+            last_bit_reset_measured_depth_m is not None
+            and abs(float(measured_depth_m) - float(last_bit_reset_measured_depth_m)) <= merge_distance_m
+        )
+        upcoming_casing_nearby = (
+            bool(pending_casing_events)
+            and 0.0 <= (float(pending_casing_events[0]["depth_m"]) - float(depth_end_m)) <= merge_distance_m
+        )
+        lithology_trip_merged_with_nearby_operation = bool(
+            lithology_changed and (recent_bit_reset_nearby or upcoming_casing_nearby)
+        )
 
-        if can_trigger_bit_trip and (abrupt_transition or reached_run_limit or reached_time_limit):
-            if abrupt_transition:
-                cause = f"Bit change due to abrupt transition to {row['lithology']}"
+        bit_trip_cause = None
+        if not bit_was_reset_this_element and not lithology_trip_merged_with_nearby_operation:
+            if lithology_changed and bool(params["bit_trip_on_lithology_change"]):
+                if reached_run_limit and reached_time_limit:
+                    bit_trip_cause = f"Bit change due to lithology transition from {previous_lithology} to {row['lithology']} and equivalent run-length/time limits"
+                elif reached_run_limit:
+                    bit_trip_cause = f"Bit change due to lithology transition from {previous_lithology} to {row['lithology']} and equivalent run-length limit"
+                elif reached_time_limit:
+                    bit_trip_cause = f"Bit change due to lithology transition from {previous_lithology} to {row['lithology']} and run-time limit"
+                else:
+                    bit_trip_cause = f"Bit change due to lithology transition from {previous_lithology} to {row['lithology']}"
             elif reached_run_limit and reached_time_limit:
-                cause = "Bit change due to equivalent run-length and run-time limits"
+                bit_trip_cause = "Bit change due to equivalent run-length and run-time limits"
             elif reached_run_limit:
-                cause = "Bit change due to equivalent run-length limit"
-            else:
-                cause = "Bit change due to run-time limit"
-
-            added_trip_h = trip_time_from_measured_depth(measured_depth_m, params)
+                bit_trip_cause = "Bit change due to equivalent run-length limit"
+            elif reached_time_limit:
+                bit_trip_cause = "Bit change due to run-time limit"
+        if bit_trip_cause is not None:
+            pipe_trip_breakdown = pipe_trip_breakdown_from_measured_depth(Data, l1, R, measured_depth_m, params)
+            added_trip_h = float(pipe_trip_breakdown["added_time_h"])
             events.append(
                 {
                     "category": "bit_trip",
-                    "cause": cause,
+                    "cause": bit_trip_cause,
                     "depth_tvd_m": float(depth_end_m),
                     "measured_depth_m": float(measured_depth_m),
                     "added_time_h": float(added_trip_h),
+                    "drillpipe_length_m": float(pipe_trip_breakdown["drillpipe_length_m"]),
+                    "heavypipe_length_m": float(pipe_trip_breakdown["heavypipe_length_m"]),
+                    "command_length_m": float(pipe_trip_breakdown["command_length_m"]),
+                    "one_way_trip_time_h": float(pipe_trip_breakdown["one_way_time_h"]),
+                    "equivalent_bit_run_m": float(equivalent_bit_run_m),
                 }
             )
             total_trip_time_h += float(added_trip_h)
             equivalent_bit_run_m = 0.0
             base_time_since_bit_trip_h = 0.0
             drilled_since_last_bit_trip_m = 0.0
+            last_bit_reset_measured_depth_m = float(measured_depth_m)
 
         previous_lithology = row["lithology"]
         previous_tvd_m = depth_end_m

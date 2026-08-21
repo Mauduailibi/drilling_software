@@ -27,19 +27,26 @@ SAVE_SELECTED_TRAJECTORY = False
 SELECTED_TRAJECTORY_FILENAME = "selected_trajectory_geological_mesh.png"
 
 OPERATIONAL_PARAMETERS = {
-    "trip_fixed_time_h": 2.0,
-    "trip_time_per_meter_h": 0.0025,
+    "trip_fixed_time_h": 1.0,
+    "trip_speed_drillpipe_mph": 500.0,
+    "trip_speed_heavypipe_mph": 250.0,
+    "trip_speed_command_mph": 150.0,
     "bit_run_length_limit_m": 900.0,
-    "bit_run_time_limit_h": 60.0,
+    "bit_run_time_limit_h": None,
     "routine_stop_every_m": 500.0,
     "routine_stop_time_h": 0.5,
-    "min_spacing_between_bit_trips_m": 150.0,
     "fatigue_dls_threshold_deg_per_30m": 3.0,
     "fatigue_dls_multiplier": 0.30,
     "fatigue_torque_ratio_threshold": 0.75,
     "fatigue_torque_multiplier": 0.35,
-    "abrupt_transition_threshold": 0.18,
-    "abrupt_transition_extra_wear": 0.30,
+    "bit_trip_on_lithology_change": True,
+    "operation_merge_distance_m": 10.0,
+    "casing_connection_length_m": 9.0,
+    "casing_connection_time_h": 0.10,
+    "casing_trip_speed_mph": 300.0,
+    "casing_logging_time_h": 5.0,
+    "cement_pumping_time_h": 2.5,
+    "cement_curing_time_h": 12.0,
     "casing_events": [
         {
             "depth_m": 2000.0,
