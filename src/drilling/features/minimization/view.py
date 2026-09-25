@@ -327,9 +327,9 @@ class MinimizationView(QWidget):
         self.setup_table(self.mesh_table)
         self.mesh_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         self.mesh_table.setMinimumHeight(340)
-        default_mesh = self.default_mesh
-        for segment in default_mesh.segments:
-            self.add_mesh_row(segment["lithology"], segment["start"], segment["end"], segment["rop"])
+        rop_values = self.default_mesh.property_values("rop")
+        for interval in self.default_mesh.flat_intervals():
+            self.add_mesh_row(interval["lithology"], interval["start"], interval["end"], rop_values[interval["lithology"]])
         layout.addWidget(self.mesh_table)
         return group
 

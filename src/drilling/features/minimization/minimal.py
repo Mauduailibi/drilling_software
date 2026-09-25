@@ -3,7 +3,11 @@
 
 ``_scan_candidates`` enumera o domínio padrão L1 × R. ``minimal_tension``
 e ``minimal_torque`` escolhem os ótimos mecânicos. ``drilling_time_breakdown``
-transforma um par (L1, R) em uma estimativa de tempo sobre uma malha geológica.
+transforma um par (L1, R) em uma estimativa de tempo sobre o modelo geológico.
+
+``Mesh`` (um ``HorizonModel``) só entra nos objetivos mecânicos quando
+``Data.friction_model == "lithology"``; no modelo de atrito constante o
+resultado mecânico independe da geologia e o cache ignora a malha.
 
 Os auxiliares de ``print`` em CLI deste arquivo são saída de pesquisa legado;
 a GUI usa ``drilling.features.minimization.plot``. Não altere passos de
@@ -11,7 +15,6 @@ varredura nem fórmulas aqui sem atualizar os snapshots golden.
 """
 
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 import numpy as np
 import pandas as pd
 
@@ -60,8 +63,15 @@ def _require_candidates(candidates):
         raise ValueError("No valid configuration was found in the searched domain.")
 
 
-def _scan_candidates(Data):
-    key = _data_signature(Data)
+def _mech_cache_key(Data, Mesh) -> tuple:
+    # The mechanical result only depends on the geology when friction comes from it,
+    # so the mesh is kept out of the key otherwise to preserve cache hits.
+    mesh_part = _mesh_signature(Mesh) if ax.use_numeric_friction(Data, Mesh) else None
+    return (_data_signature(Data), mesh_part)
+
+
+def _scan_candidates(Data, Mesh=None):
+    key = _mech_cache_key(Data, Mesh)
     if key in _MECH_CACHE:
         return _MECH_CACHE[key]
 
@@ -74,20 +84,7 @@ def _scan_candidates(Data):
         for R in r_values:
             try:
                 config = ax.validate_configuration(Data, l1, R)
-                up_t1, up_t2, up_t3 = ax.up_tension(Data, l1, R)
-                down_t1, down_t2, down_t3, torque = ax.down_tension(Data, l1, R)
-                config.update(
-                    {
-                        "up_force_1": float(up_t1),
-                        "up_force_2": float(up_t2),
-                        "up_force_3": float(up_t3),
-                        "down_force_1": float(down_t1),
-                        "down_force_2": float(down_t2),
-                        "down_force_3": float(down_t3),
-                        "torque": float(torque),
-                        "neutral_line": float(ax.Nl(Data, l1, R)),
-                    }
-                )
+                config.update(ax.mechanical_summary(Data, Mesh, l1, R))
                 candidates.append(config)
             except (ValueError, FloatingPointError, ZeroDivisionError):
                 continue
@@ -96,22 +93,22 @@ def _scan_candidates(Data):
     return candidates
 
 
-def minimal_tension(Data) -> list:
-    candidates = _scan_candidates(Data)
+def minimal_tension(Data, Mesh=None) -> list:
+    candidates = _scan_candidates(Data, Mesh)
     _require_candidates(candidates)
     best = min(candidates, key=lambda item: item["up_force_1"])
     return [best["l1"], best["R"]]
 
 
-def minimal_torque(Data) -> list:
-    candidates = _scan_candidates(Data)
+def minimal_torque(Data, Mesh=None) -> list:
+    candidates = _scan_candidates(Data, Mesh)
     _require_candidates(candidates)
     best = min(candidates, key=lambda item: item["torque"])
     return [best["l1"], best["R"]]
 
 
-def drilling_informations(Data) -> list:
-    candidates = _scan_candidates(Data)
+def drilling_informations(Data, Mesh=None) -> list:
+    candidates = _scan_candidates(Data, Mesh)
     _require_candidates(candidates)
     best_tension = min(candidates, key=lambda item: item["up_force_1"])
     best_torque = min(candidates, key=lambda item: item["torque"])
@@ -131,8 +128,8 @@ def drilling_informations(Data) -> list:
     return [_pack(best_tension), _pack(best_torque)]
 
 
-def drilling_informations_table(data):
-    results = drilling_informations(data)
+def drilling_informations_table(data, Mesh=None):
+    results = drilling_informations(data, Mesh)
     for i, result in enumerate(results):
         up_forces, down_forces, angle, neutral_line, lengths, length_command, l1, R = result
         l1, l2, l3 = lengths
@@ -151,130 +148,153 @@ def drilling_informations_table(data):
         print("")
 
 
-def _finish_plot(ax_plot, title: str, xlabel: str, ylabel: str, equal: bool = False) -> None:
-    if equal:
-        ax_plot.set_aspect("equal")
-    ax_plot.set_title(title)
-    ax_plot.set_xlabel(xlabel)
-    ax_plot.set_ylabel(ylabel)
-    ax_plot.grid(alpha=0.35, linewidth=0.8)
-    plt.tight_layout()
+def _group_totals(keys: np.ndarray, lengths: np.ndarray, times: np.ndarray) -> dict:
+    """Comprimento perfurado e tempo totais por chave distinta, na ordem de primeira ocorrência."""
+    totals = {}
+    for key in dict.fromkeys(keys.tolist()):
+        mask = keys == key
+        totals[str(key)] = {
+            "length_m": float(lengths[mask].sum()),
+            "time_h": float(times[mask].sum()),
+        }
+    return totals
 
 
-def drilling_time_breakdown(Data, Mesh, l1: float, R: float, ds_target: float | None = None) -> dict:
+def drilling_time_breakdown(
+    Data,
+    Mesh,
+    l1: float,
+    R: float,
+    ds_target: float | None = None,
+    detail: bool = True,
+    geometry: dict | None = None,
+) -> dict:
     """Integra o tempo de broca ao longo da trajetória discretizada.
 
     Parameters
     ----------
     Data : DataSet
         Dados mecânicos e parâmetros de fator de ROP.
-    Mesh : mesh
-        Intervalos de litologia.
+    Mesh : HorizonModel
+        Modelo geológico de onde vêm a ROP base (e ``mu``, se aplicável).
     l1, R : float
         Configuração em cronometragem.
     ds_target : float or None, optional
-        Comprimento de elemento encaminhado a ``trajectory_elements``.
+        Comprimento de elemento encaminhado a ``trajectory_arrays``.
+    detail : bool, optional
+        ``False`` pula a montagem das linhas por elemento: a varredura de
+        candidatos avalia milhares de trajetórias e só precisa dos totais.
+    geometry : dict or None, optional
+        Saída pré-calculada de ``auxiliaries.evaluate_trajectory``.
 
     Returns
     -------
     dict
-        Linhas por elemento, totais e decomposições por litologia e trecho.
+        Linhas por elemento (vazias com ``detail=False``), totais,
+        decomposições por litologia e trecho, ``geometry`` e ``arrays`` (as
+        colunas consumidas pelo modelo operacional).
     """
-    config = ax.validate_configuration(Data, l1, R)
-    elements = ax.trajectory_elements(Data, l1, R, ds_target=ds_target)
+    if Mesh is None and geometry is None:
+        raise ValueError("drilling_time_breakdown needs a geological model to read the ROP from.")
+    geom = geometry if geometry is not None else ax.evaluate_trajectory(
+        Data, Mesh, l1, R, ds_target=ds_target
+    )
+    config = geom["config"]
     params = Data.drilling_time_parameters
 
+    ds = geom["length"]
+    angle_deg = geom["inclination_deg"]
+    dls = geom["dls_deg_per_30m"]
+    curvature = geom["curvature"]
+    rop_base = geom["rop_base"]
+    mu = geom["mu"]
+
+    f_inc_raw = ax.inclination_factor(angle_deg, params)
+    f_dls = ax.dls_factor(dls, params)
+    wob_transfer = ax.wob_transfer_factor(angle_deg, dls, params)
+    wob_effective = float(params["surface_wob"]) * wob_transfer
+    f_wob = ax.wob_factor(wob_effective, params)
+
+    contact_force = ax.local_contact_force_per_length(Data, angle_deg, curvature, wob_effective)
+    torque_increment = mu * contact_force * ds * float(params["bit_radius"])
+    cumulative_torque = np.cumsum(torque_increment)
+    f_torque = ax.torque_factor(cumulative_torque, params)
+
+    # Inside a build section the dogleg penalty already stands in for the
+    # inclination penalty, so the two are not compounded.
+    f_dls_active = f_dls < (1.0 - ax.EPS)
+    f_inc = np.where(f_dls_active, 1.0, f_inc_raw)
+    f_rop_total = f_inc * f_dls * f_wob * f_torque
+
+    rop_effective = rop_base * f_rop_total
+    if np.any(~np.isfinite(rop_effective)) or np.any(rop_effective <= 0):
+        raise ValueError("The effective ROP became non-positive.")
+    time_h = ds / rop_effective
+
+    lithology = geom["lithology"]
+    section = geom["section"]
+    total_time_h = float(time_h.sum())
+    total_length = float(ds.sum())
+
     rows = []
-    total_time_h = 0.0
-    total_length = 0.0
-    cumulative_torque = 0.0
-
-    for index, element in enumerate(elements, start=1):
-        depth_mid = float(element["y_mid"])
-        segment = Mesh.segment_at_depth(depth_mid)
-        rop_base = float(segment["rop"])
-
-        angle_deg = float(element["inclination_deg"])
-        dls = float(element["dls_deg_per_30m"])
-        curvature = float(element["curvature"])
-        ds = float(element["length"])
-
-        f_inc_raw = ax.inclination_factor(angle_deg, params)
-        f_dls = ax.dls_factor(dls, params)
-
-        wob_transfer = ax.wob_transfer_factor(angle_deg, dls, params)
-        wob_effective = float(params["surface_wob"]) * wob_transfer
-        f_wob = ax.wob_factor(wob_effective, params)
-
-        contact_force_per_length = ax.local_contact_force_per_length(Data, angle_deg, curvature, wob_effective)
-        torque_increment = float(Data.µ * contact_force_per_length * ds * float(params["bit_radius"]))
-        cumulative_torque += torque_increment
-        f_torque = ax.torque_factor(cumulative_torque, params)
-
-        section = element["section"]
-        f_dls_active = f_dls < (1.0 - ax.EPS)
-        f_inc = 1.0 if f_dls_active else f_inc_raw
-        f_rop_total = f_inc * f_dls * f_wob * f_torque
-
-        rop_effective = rop_base * f_rop_total
-        if rop_effective <= 0:
-            raise ValueError("The effective ROP became non-positive.")
-
-        time_h = float(ds / rop_effective)
-        total_time_h += time_h
-        total_length += ds
-
-        rows.append(
+    if detail:
+        rows = [
             {
-                "id": index,
-                "section": section,
-                "depth_mid_m": depth_mid,
-                "element_length_m": ds,
-                "inclination_deg": angle_deg,
-                "curvature_1pm": curvature,
-                "dls_deg_per_30m": dls,
-                "lithology": segment["lithology"],
-                "rop_base_mph": rop_base,
-                "wob_transfer": wob_transfer,
-                "wob_effective_N": wob_effective,
-                "contact_force_per_length_Npm": contact_force_per_length,
-                "torque_increment_Nm": torque_increment,
-                "cumulative_torque_Nm": cumulative_torque,
-                "f_inclination": f_inc,
-                "f_inclination_raw": f_inc_raw,
-                "f_dls": f_dls,
-                "f_dls_active": f_dls_active,
-                "f_wob": f_wob,
-                "f_torque": f_torque,
-                "f_rop_total": f_rop_total,
-                "rop_effective_mph": rop_effective,
-                "time_h": time_h,
+                "id": index + 1,
+                "section": section[index],
+                "depth_mid_m": float(geom["z_mid"][index]),
+                "x_mid_m": float(geom["x_mid"][index]),
+                "y_mid_m": float(geom["y_mid"][index]),
+                "measured_depth_m": float(geom["measured_depth_m"][index]),
+                "element_length_m": float(ds[index]),
+                "inclination_deg": float(angle_deg[index]),
+                "curvature_1pm": float(curvature[index]),
+                "dls_deg_per_30m": float(dls[index]),
+                "lithology": lithology[index],
+                "mu": float(mu[index]),
+                "rop_base_mph": float(rop_base[index]),
+                "wob_transfer": float(wob_transfer[index]),
+                "wob_effective_N": float(wob_effective[index]),
+                "contact_force_per_length_Npm": float(contact_force[index]),
+                "torque_increment_Nm": float(torque_increment[index]),
+                "cumulative_torque_Nm": float(cumulative_torque[index]),
+                "f_inclination": float(f_inc[index]),
+                "f_inclination_raw": float(f_inc_raw[index]),
+                "f_dls": float(f_dls[index]),
+                "f_dls_active": bool(f_dls_active[index]),
+                "f_wob": float(f_wob[index]),
+                "f_torque": float(f_torque[index]),
+                "f_rop_total": float(f_rop_total[index]),
+                "rop_effective_mph": float(rop_effective[index]),
+                "time_h": float(time_h[index]),
             }
-        )
-
-    by_lithology = {}
-    by_section = {}
-    for row in rows:
-        lith = row["lithology"]
-        sec = row["section"]
-        by_lithology.setdefault(lith, {"length_m": 0.0, "time_h": 0.0})
-        by_section.setdefault(sec, {"length_m": 0.0, "time_h": 0.0})
-        by_lithology[lith]["length_m"] += row["element_length_m"]
-        by_lithology[lith]["time_h"] += row["time_h"]
-        by_section[sec]["length_m"] += row["element_length_m"]
-        by_section[sec]["time_h"] += row["time_h"]
+            for index in range(geom["n_elements"])
+        ]
 
     return {
         "l1": float(config["l1"]), "l2": float(config["l2"]), "l3": float(config["l3"]),
         "R": float(config["R"]), "angle_deg": float(config["angle_deg"]), "lc": float(config["lc"]),
         "ld": float(config["ld"]), "elements": rows,
-        "by_lithology": by_lithology, "by_section": by_section,
-        "total_length_m": float(total_length),
-        "total_time_h": float(total_time_h),
+        "by_lithology": _group_totals(lithology, ds, time_h),
+        "by_section": _group_totals(section, ds, time_h),
+        "total_length_m": total_length,
+        "total_time_h": total_time_h,
         "average_rop_mph": float(total_length / total_time_h if total_time_h > 0 else np.nan),
-        "max_cumulative_torque_Nm": float(max([row["cumulative_torque_Nm"] for row in rows], default=0.0)),
-        "average_wob_N": float(np.mean([row["wob_effective_N"] for row in rows]) if rows else np.nan),
-        "average_dls_deg_per_30m": float(np.mean([row["dls_deg_per_30m"] for row in rows]) if rows else np.nan),
+        "max_cumulative_torque_Nm": float(cumulative_torque[-1]) if cumulative_torque.size else 0.0,
+        "average_wob_N": float(np.mean(wob_effective)),
+        "average_dls_deg_per_30m": float(np.mean(dls)),
+        "mu_from_mesh": bool(geom.get("mu_from_mesh", False)),
+        "geometry": geom,
+        # The columns the operational model consumes, so it never has to be handed
+        # thousands of per-element dictionaries just to iterate over them.
+        "arrays": {
+            "element_length_m": ds,
+            "lithology": lithology,
+            "dls_deg_per_30m": dls,
+            "cumulative_torque_Nm": cumulative_torque,
+            "time_h": time_h,
+            "depth_end_m": np.maximum(geom["z0"], geom["z1"]),
+        },
     }
 
 
@@ -283,13 +303,22 @@ def _scan_candidates_with_time(Data, Mesh):
     if key in _TIME_CACHE:
         return _TIME_CACHE[key]
 
-    base_candidates = _scan_candidates(Data)
+    base_candidates = _scan_candidates(Data, Mesh)
     candidates = []
     for candidate in base_candidates:
         try:
-            timing = drilling_time_breakdown(Data, Mesh, candidate["l1"], candidate["R"])
+            # Summary only: keeping the per-element rows of every candidate would
+            # hold millions of dictionaries in the cache for no benefit.
+            timing = drilling_time_breakdown(
+                Data, Mesh, candidate["l1"], candidate["R"], detail=False
+            )
             merged = dict(candidate)
-            merged.update({"drilling_time_h": float(timing["total_time_h"]), "average_rop_mph": float(timing["average_rop_mph"]), "timing": timing})
+            merged.update(
+                {
+                    "drilling_time_h": float(timing["total_time_h"]),
+                    "average_rop_mph": float(timing["average_rop_mph"]),
+                }
+            )
             candidates.append(merged)
         except (ValueError, FloatingPointError, ZeroDivisionError):
             continue
@@ -307,7 +336,9 @@ def minimal_drilling_time(Data, Mesh) -> list:
 def drilling_time_informations(Data, Mesh) -> dict:
     candidates = _scan_candidates_with_time(Data, Mesh)
     _require_candidates(candidates)
-    return min(candidates, key=lambda item: item["drilling_time_h"])
+    best = dict(min(candidates, key=lambda item: item["drilling_time_h"]))
+    best["timing"] = drilling_time_breakdown(Data, Mesh, best["l1"], best["R"])
+    return best
 
 
 def drilling_time_information_table(Data, Mesh) -> None:
@@ -349,16 +380,16 @@ def drilling_time_information_table(Data, Mesh) -> None:
 
 def optimization_summary_table(Data, Mesh=None) -> None:
     rows = []
-    force_l1, force_R = minimal_tension(Data)
+    force_l1, force_R = minimal_tension(Data, Mesh)
     force_cfg = ax.validate_configuration(Data, force_l1, force_R)
-    force_up = ax.up_tension(Data, force_l1, force_R)
-    force_down = ax.down_tension(Data, force_l1, force_R)
+    force_up = ax.up_tension(Data, force_l1, force_R, Mesh)
+    force_down = ax.down_tension(Data, force_l1, force_R, Mesh)
     force_time = drilling_time_breakdown(Data, Mesh, force_l1, force_R)["total_time_h"] if Mesh is not None else np.nan
     rows.append({"Objective": "Minimal axial force", "L1 (m)": round(force_l1, 3), "R (m)": round(force_R, 3), "Angle (deg)": round(force_cfg["angle_deg"], 3), "Top axial force (N)": round(force_up[0], 3), "Torque (N*m)": round(force_down[3], 3), "Total time (h)": round(force_time, 3) if Mesh is not None else np.nan})
-    torque_l1, torque_R = minimal_torque(Data)
+    torque_l1, torque_R = minimal_torque(Data, Mesh)
     torque_cfg = ax.validate_configuration(Data, torque_l1, torque_R)
-    torque_up = ax.up_tension(Data, torque_l1, torque_R)
-    torque_down = ax.down_tension(Data, torque_l1, torque_R)
+    torque_up = ax.up_tension(Data, torque_l1, torque_R, Mesh)
+    torque_down = ax.down_tension(Data, torque_l1, torque_R, Mesh)
     torque_time = drilling_time_breakdown(Data, Mesh, torque_l1, torque_R)["total_time_h"] if Mesh is not None else np.nan
     rows.append({"Objective": "Minimal torque", "L1 (m)": round(torque_l1, 3), "R (m)": round(torque_R, 3), "Angle (deg)": round(torque_cfg["angle_deg"], 3), "Top axial force (N)": round(torque_up[0], 3), "Torque (N*m)": round(torque_down[3], 3), "Total time (h)": round(torque_time, 3) if Mesh is not None else np.nan})
     if Mesh is not None:
@@ -368,29 +399,6 @@ def optimization_summary_table(Data, Mesh=None) -> None:
     print("\n--- Unified optimization summary ---")
     print(table.to_string(index=False))
     print("")
-
-
-def _prepare_mesh_axes(ax_plot, Data, Mesh, x_values, y_values):
-    margin_x = float(Data.drilling_time_parameters.get("mesh_plot_margin_x", 100.0))
-    x_min = min(0.0, min(x_values) - 0.05 * max(Data.P3[0], 1.0))
-    x_max = max(max(x_values), Data.P3[0]) + margin_x
-    y_max = max([segment["end"] for segment in Mesh.segments] + [Data.P3[1], max(y_values)])
-    alpha = float(Data.drilling_time_parameters.get("mesh_plot_alpha", 0.25))
-    used_labels = set()
-    for segment in Mesh.segments:
-        color = ax.LITHOLOGY_COLORS.get(segment["lithology"], "#dddddd")
-        label = segment["lithology"] if segment["lithology"] not in used_labels else None
-        if label is not None:
-            used_labels.add(label)
-        rect = patches.Rectangle((x_min, segment["start"]), x_max - x_min, segment["end"] - segment["start"], facecolor=color, edgecolor="white", alpha=alpha, linewidth=0.8, label=label, zorder=0)
-        ax_plot.add_patch(rect)
-    ax_plot.set_aspect("equal")
-    ax_plot.set_xlim(x_min, x_max)
-    ax_plot.set_ylim(0.0, y_max)
-    ax_plot.invert_yaxis()
-    ax_plot.set_xlabel("Horizontal distance (m)")
-    ax_plot.set_ylabel("Depth (m)")
-    ax_plot.grid(alpha=0.25, linewidth=0.8)
 
 
 def plot_metrics_vs_radius_for_best_l1(

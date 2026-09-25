@@ -178,7 +178,7 @@ def capture_minimization_point() -> None:
     )
     print("wrote", GOLDENS / "minimization_point_l1_1200_r_500.json", flush=True)
 
-    best_force, best_torque = _best_mechanical_candidates(data)
+    best_force, best_torque = _best_mechanical_candidates(data, geological_mesh)
     mechanical = {
         "force": {
             "l1": float(best_force["l1"]),

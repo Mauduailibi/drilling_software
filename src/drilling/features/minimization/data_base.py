@@ -1,22 +1,42 @@
+"""Modelos de domínio da otimização Tipo 1: dados mecânicos do poço e modelo geológico.
 
-"""Modelos de domínio da otimização Tipo 1: dados mecânicos do poço e malha de litologia.
-
-``DataSet`` guarda geometria, densidades, diâmetros e parâmetros de tempo de
-broca. ``mesh`` guarda intervalos de profundidade sem sobreposição e valores
-de ROP. Nenhuma das classes implementa as fórmulas de tração ou de tempo;
+``DataSet`` guarda geometria (``P0``/``P3`` em 3D), densidades, diâmetros,
+parâmetros de tempo de broca e o modelo de atrito. O modelo geológico em si
+fica em :mod:`drilling.features.minimization.geology`; este módulo o
+reexporta e mantém ``mesh`` como ponto de entrada histórico para camadas
+planas. Nenhuma das classes implementa as fórmulas de tração ou de tempo;
 essas ficam em ``minimal`` e ``auxiliaries``.
 """
 
-import bisect
 import numpy as np
+
+from drilling.features.minimization.geology import (
+    GeoGrid2D,
+    HorizonModel,
+    LITHOLOGY_COLORS,
+    LITHOLOGY_NAMES,
+    lithology_code,
+    lithology_name,
+)
+
+__all__ = [
+    "DataSet",
+    "GeoGrid2D",
+    "HorizonModel",
+    "LITHOLOGY_COLORS",
+    "LITHOLOGY_NAMES",
+    "lithology_code",
+    "lithology_name",
+    "mesh",
+]
 
 
 class _MechanicalDataSet:
     """Contêiner dos dados geométricos e mecânicos de entrada."""
     def __init__(
         self,
-        P0: tuple[float, float],
-        P3: tuple[float, float],
+        P0: tuple,
+        P3: tuple,
         ro_fluid: float,
         ro_command: float,
         ro_drillpipe: float,
@@ -30,10 +50,13 @@ class _MechanicalDataSet:
         max: float,
         radius: tuple[float, float],
     ) -> None:
-        if tuple(P0) != (0, 0):
-            raise ValueError("The current Type-1 geometry implementation requires P0 = (0, 0).")
-        if P3[0] <= 0 or P3[1] <= 0:
-            raise ValueError("P3 must contain positive horizontal distance and depth.")
+        P0 = self._normalize_point(P0, "P0")
+        P3 = self._normalize_point(P3, "P3")
+        if P0 != (0.0, 0.0, 0.0):
+            raise ValueError("The current Type-1 geometry implementation requires P0 = (0, 0, 0).")
+        departure = float(np.hypot(P3[0], P3[1]))
+        if departure <= 0 or P3[2] <= 0:
+            raise ValueError("P3 must contain a positive horizontal offset (x, y) and a positive depth z.")
         if lp <= 0:
             raise ValueError("The heavy-pipe length 'lp' must be positive.")
         if µ < 0:
@@ -51,8 +74,10 @@ class _MechanicalDataSet:
         area_drill = (np.pi / 4) * (diameters_drillpipe[0] ** 2 - diameters_drillpipe[1] ** 2)
         area_heavy = (np.pi / 4) * (diameters_heavypipe[0] ** 2 - diameters_heavypipe[1] ** 2)
 
-        self.P0 = tuple(P0)
-        self.P3 = tuple(P3)
+        self.P0 = P0
+        self.P3 = P3
+        self.departure = departure
+        self.azimuth = float(np.arctan2(P3[1], P3[0]))
         self.g = 9.81
         self.ro_fluid = ro_fluid
         self.ro_command = ro_command
@@ -83,6 +108,18 @@ class _MechanicalDataSet:
         self.operational_parameters = None
 
     @staticmethod
+    def _normalize_point(point, name: str) -> tuple[float, float, float]:
+        try:
+            values = tuple(float(value) for value in point)
+        except TypeError as exc:
+            raise ValueError(f"{name} must be a sequence of coordinates.") from exc
+        if len(values) == 2:
+            return (values[0], 0.0, values[1])
+        if len(values) == 3:
+            return values
+        raise ValueError(f"{name} must have 2 coordinates (x, depth) or 3 coordinates (x, y, z).")
+
+    @staticmethod
     def _validate_diameters(name: str, diameters: tuple[float, float]) -> None:
         if len(diameters) != 2:
             raise ValueError(f"The diameter tuple for '{name}' must have length 2.")
@@ -100,59 +137,6 @@ class _MechanicalDataSet:
             self.d_ext_heavy, self.d_int_heavy, self.lp, self.max, self.min_l1,
             self.min_radius, self.max_radius, self.angle_limit_deg, self.l1_step, self.radius_step,
         )
-
-
-class lithology:
-    """Descritor simples de litologia, com apenas o valor de ROP."""
-    def __init__(self, rop: float | None = None) -> None:
-        self.rop = rop
-    def shale(self, rop: int): self.rop = rop
-    def siltstone(self, rop: int): self.rop = rop
-    def sandstone(self, rop: int): self.rop = rop
-    def limestone(self, rop: int): self.rop = rop
-    def dolomite(self, rop: int): self.rop = rop
-    def evaporite(self, rop: int): self.rop = rop
-
-
-class _BaseMesh:
-    def __init__(
-        self,
-        sandstone: list | None = None,
-        limestone: list | None = None,
-        dolomite: list | None = None,
-        evaporite: list | None = None,
-        shale: list | None = None,
-        siltstone: list | None = None,
-    ):
-        self.intervals = {
-            "Shale": self._normalize_intervals([] if shale is None else shale, "Shale"),
-            "Siltstone": self._normalize_intervals([] if siltstone is None else siltstone, "Siltstone"),
-            "Sandstone": self._normalize_intervals([] if sandstone is None else sandstone, "Sandstone"),
-            "Limestone": self._normalize_intervals([] if limestone is None else limestone, "Limestone"),
-            "Dolomite": self._normalize_intervals([] if dolomite is None else dolomite, "Dolomite"),
-            "Evaporite": self._normalize_intervals([] if evaporite is None else evaporite, "Evaporite"),
-        }
-        self.segments = []
-        for lithology_name, intervals in self.intervals.items():
-            for start, end in intervals:
-                self.segments.append({"lithology": lithology_name, "start": float(start), "end": float(end), "length": float(end - start)})
-        self.segments.sort(key=lambda item: (item["start"], item["end"]))
-        self.total_length = sum(segment["length"] for segment in self.segments)
-
-    @staticmethod
-    def _normalize_intervals(intervals: list, name: str) -> list[tuple[float, float]]:
-        normalized = []
-        for interval in intervals:
-            if len(interval) != 2:
-                raise ValueError(f"Each interval of '{name}' must have two values: [start, end].")
-            start, end = float(interval[0]), float(interval[1])
-            if end <= start:
-                raise ValueError(f"Invalid interval in '{name}': end ({end}) must be greater than start ({start}).")
-            normalized.append((start, end))
-        return normalized
-
-    def as_dict(self) -> dict:
-        return {"intervals": self.intervals, "segments": self.segments, "total_length": self.total_length}
 
 
 class DataSetTimeMixin:
@@ -205,93 +189,56 @@ class DataSetTimeMixin:
 
 
 class DataSet(_MechanicalDataSet, DataSetTimeMixin):
-    """Dados mecânicos e parâmetros de tempo de broca de uma trajetória Tipo 1."""
-    def __init__(self, *args, drilling_time_parameters: dict | None = None, operational_parameters: dict | None = None, **kwargs):
+    """Dados mecânicos, parâmetros de tempo de broca e modelo de atrito de uma trajetória Tipo 1.
+
+    ``P0`` e ``P3`` aceitam ``(x, profundidade)`` ou ``(x, y, z)``, com ``z``
+    positivo para baixo; ``(x, profundidade)`` vira ``(x, 0, profundidade)``.
+    O poço fica no plano vertical que passa por ``P0`` com o azimute de ``P3``
+    (``departure`` é o afastamento horizontal e ``azimuth`` o azimute em rad).
+
+    ``friction_model`` escolhe como o coeficiente de atrito é aplicado:
+
+    ``"constant"``
+        Usa ``Data.µ`` em todo o poço e a solução fechada de torque e arraste.
+        É o comportamento histórico.
+    ``"lithology"``
+        Toma o coeficiente de atrito do modelo geológico em cada elemento e
+        integra torque e arraste numericamente, de modo que os objetivos
+        mecânicos respondem à rocha que o poço atravessa. Exige uma malha
+        construída com ``mu_values``.
+    """
+
+    def __init__(
+        self,
+        *args,
+        drilling_time_parameters: dict | None = None,
+        operational_parameters: dict | None = None,
+        friction_model: str = "constant",
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
+        if friction_model not in ("constant", "lithology"):
+            raise ValueError("'friction_model' must be either 'constant' or 'lithology'.")
         self._init_drilling_time_parameters(drilling_time_parameters)
         self.operational_parameters = operational_parameters
+        self.friction_model = friction_model
 
     def cache_signature(self) -> tuple:
         return super().cache_signature() + (
             tuple(sorted(self.drilling_time_parameters.items())),
             None if self.operational_parameters is None else tuple(sorted(self.operational_parameters.items())),
+            self.friction_model,
         )
 
 
-class mesh(_BaseMesh):
-    """Malha geológica: intervalos de profundidade sem sobreposição e tabela de ROP."""
-    def __init__(
-        self,
-        sandstone: list | None = None,
-        limestone: list | None = None,
-        dolomite: list | None = None,
-        evaporite: list | None = None,
-        shale: list | None = None,
-        siltstone: list | None = None,
-        rop_values: dict | None = None,
-        default_rop: float | None = None,
-    ):
-        super().__init__(
-            sandstone=sandstone,
-            limestone=limestone,
-            dolomite=dolomite,
-            evaporite=evaporite,
-            shale=shale,
-            siltstone=siltstone,
-        )
-        self.rop_values = {"Shale": None, "Siltstone": None, "Sandstone": None, "Limestone": None, "Dolomite": None, "Evaporite": None}
-        if rop_values is not None:
-            for key, value in rop_values.items():
-                if key not in self.rop_values:
-                    raise ValueError(f"Unsupported lithology in 'rop_values': {key}")
-                if value is None or value <= 0:
-                    raise ValueError(f"ROP for '{key}' must be positive.")
-                self.rop_values[key] = float(value)
+def mesh(**kwargs) -> HorizonModel:
+    """Cria um modelo geológico a partir de intervalos de profundidade planos.
 
-        if default_rop is not None and default_rop <= 0:
-            raise ValueError("'default_rop' must be positive when provided.")
-        self.default_rop = None if default_rop is None else float(default_rop)
-
-        self._check_overlaps()
-        for segment in self.segments:
-            lithology_name = segment["lithology"]
-            rop = self.rop_values.get(lithology_name)
-            if rop is None and self.default_rop is None:
-                raise ValueError(f"Missing ROP for lithology '{lithology_name}'. Provide it in 'rop_values' or use 'default_rop'.")
-            segment["rop"] = float(self.default_rop if rop is None else rop)
-
-        self._starts = [segment["start"] for segment in self.segments]
-
-    def _check_overlaps(self) -> None:
-        ordered = sorted(self.segments, key=lambda item: (item["start"], item["end"]))
-        for previous, current in zip(ordered[:-1], ordered[1:]):
-            if current["start"] < previous["end"]:
-                raise ValueError("The geological intervals overlap. Please provide a non-overlapping depth partition.")
-
-    def segment_at_depth(self, depth: float) -> dict:
-        d = float(depth)
-        if not self.segments:
-            raise ValueError("The geological mesh is empty.")
-        idx = bisect.bisect_right(self._starts, d) - 1
-        if 0 <= idx < len(self.segments):
-            segment = self.segments[idx]
-            if segment["start"] <= d < segment["end"]:
-                return segment
-        if np.isclose(d, self.segments[-1]["end"]):
-            return self.segments[-1]
-        if self.default_rop is None:
-            raise ValueError(f"Depth {d:.3f} m is outside the geological mesh and no default ROP was provided.")
-        return {"lithology": "Undefined", "start": d, "end": d, "length": 0.0, "rop": self.default_rop}
-
-    def rop_at_depth(self, depth: float) -> float:
-        return float(self.segment_at_depth(depth)["rop"])
-
-    def cache_signature(self) -> tuple:
-        seg_tuple = tuple((seg["lithology"], seg["start"], seg["end"], seg.get("rop")) for seg in self.segments)
-        return (seg_tuple, tuple(sorted(self.rop_values.items())), self.default_rop)
-
-    def as_dict(self) -> dict:
-        data = super().as_dict()
-        data["rop_values"] = self.rop_values
-        data["default_rop"] = self.default_rop
-        return data
+    Mantido como ponto de entrada histórico: aceita a forma
+    ``sandstone=[[z0, z1], ...]`` (e os blocos ``[x0, x1, y0, y1, z0, z1]``),
+    além de ``rop_values``, ``mu_values``, ``wear_factors`` e defaults, e
+    devolve um :class:`~drilling.features.minimization.geology.HorizonModel`.
+    Geologia com variação lateral é construída diretamente com
+    ``HorizonModel.from_layer_stack`` e os construtores de superfícies/fácies.
+    """
+    return HorizonModel.from_flat_layers(**kwargs)

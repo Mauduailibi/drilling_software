@@ -43,6 +43,12 @@ DEFAULT_OPERATIONAL_PARAMETERS = {
     "fatigue_torque_ratio_threshold": 0.75,
     "fatigue_torque_multiplier": 0.35,
     "bit_trip_on_lithology_change": True,
+    # A bit is only changed for a lithology transition once the new rock has been
+    # drilled continuously for this distance. Without it, a well running close to a
+    # dipping contact flips lithology every few metres and fabricates bit trips.
+    "lithology_min_run_m": 30.0,
+    # Two bit changes are never scheduled closer than this along the measured depth.
+    "min_spacing_between_bit_trips_m": 150.0,
     "operation_merge_distance_m": 10.0,
     "casing_connection_length_m": 9.0,
     "casing_connection_time_h": 0.10,
@@ -266,33 +272,66 @@ def casing_cementing_breakdown_from_depth(casing_depth_m: float, params: dict) -
     }
 
 
-def _bit_wear_increment(
-    row: dict,
+def debounce_lithology(lithology: np.ndarray, lengths: np.ndarray, min_run_m: float) -> np.ndarray:
+    """Absorve trechos de litologia mais curtos que ``min_run_m`` na rocha anterior.
+
+    O modelo geológico resolve intercalações finas e contatos rasantes aos quais
+    o sondador nunca reagiria; usados sem filtro, cada um dispararia uma troca
+    de broca. Só a decisão de manobra usa a coluna filtrada; o desgaste da broca
+    continua seguindo a rocha efetivamente cortada.
+    """
+    lithology = np.asarray(lithology, dtype=object)
+    if min_run_m <= 0.0 or lithology.size == 0:
+        return lithology.copy()
+
+    changes = np.flatnonzero(lithology[1:] != lithology[:-1]) + 1
+    starts = np.concatenate(([0], changes))
+    ends = np.concatenate((changes, [lithology.size]))
+
+    filtered = lithology.copy()
+    current = lithology[0]
+    for start, end in zip(starts, ends):
+        run_length = float(np.sum(lengths[start:end]))
+        if lithology[start] != current and run_length < min_run_m:
+            filtered[start:end] = current
+            continue
+        current = lithology[start]
+        filtered[start:end] = current
+    return filtered
+
+
+def bit_wear_increments(
+    lengths: np.ndarray,
+    lithology: np.ndarray,
+    dls: np.ndarray,
+    cumulative_torque: np.ndarray,
     params: dict,
     torque_reference: float,
-    previous_lithology: str | None,
-) -> tuple[float, bool]:
-    ds = float(row["element_length_m"])
-    lithology = row["lithology"]
-    wear_factor = float(params["lithology_wear_factors"].get(lithology, 1.0))
+) -> np.ndarray:
+    """Metros equivalentes de vida de broca consumidos por cada elemento.
 
-    dls = float(row["dls_deg_per_30m"])
+    Rocha abrasiva, dogleg severo e coluna muito carregada desgastam a broca
+    mais rápido do que o comprimento perfurado sugere, então o limite de
+    corrida é comparado com este comprimento ponderado, e não com a
+    profundidade medida.
+    """
+    wear_table = params["lithology_wear_factors"]
+    wear_factor = np.array([float(wear_table.get(name, 1.0)) for name in lithology], dtype=float)
+
     dls_threshold = float(params["fatigue_dls_threshold_deg_per_30m"])
-    dls_excess = max(0.0, (dls - dls_threshold) / dls_threshold) if dls_threshold > 0 else 0.0
+    dls_excess = np.maximum(0.0, (dls - dls_threshold) / dls_threshold) if dls_threshold > 0 else 0.0
     dls_multiplier = 1.0 + float(params["fatigue_dls_multiplier"]) * dls_excess
 
-    torque_ratio = 0.0 if torque_reference <= 0.0 else float(row["cumulative_torque_Nm"]) / torque_reference
     torque_threshold = float(params["fatigue_torque_ratio_threshold"])
-    if torque_ratio > torque_threshold:
-        denominator = max(1.0 - torque_threshold, 1.0e-8)
-        torque_excess = (torque_ratio - torque_threshold) / denominator
+    if torque_reference <= 0.0:
+        torque_excess = np.zeros_like(cumulative_torque)
     else:
-        torque_excess = 0.0
+        ratio = cumulative_torque / torque_reference
+        denominator = max(1.0 - torque_threshold, 1.0e-8)
+        torque_excess = np.maximum(0.0, (ratio - torque_threshold) / denominator)
     torque_multiplier = 1.0 + float(params["fatigue_torque_multiplier"]) * torque_excess
 
-    lithology_changed = previous_lithology is not None and lithology != previous_lithology
-    wear = ds * wear_factor * dls_multiplier * torque_multiplier
-    return float(wear), lithology_changed
+    return lengths * wear_factor * dls_multiplier * torque_multiplier
 
 
 def operational_time_breakdown(
@@ -309,8 +348,8 @@ def operational_time_breakdown(
     ----------
     Data : DataSet
         Dados mecânicos usados na decomposição das manobras de tubo.
-    Mesh : mesh
-        Intervalos de litologia (mudanças de litologia podem disparar manobra de broca).
+    Mesh : HorizonModel
+        Modelo geológico (mudanças de litologia podem disparar manobra de broca).
     l1, R : float
         Configuração em cronometragem.
     drilling_timing : dict or None, optional
@@ -322,15 +361,37 @@ def operational_time_breakdown(
     -------
     dict
         Eventos operacionais, totais por categoria e ``total_time_h``.
+
+    Notes
+    -----
+    A troca de broca por mudança de litologia usa a coluna filtrada por
+    ``debounce_lithology`` (``lithology_min_run_m``) e respeita
+    ``min_spacing_between_bit_trips_m`` desde a última troca.
     """
     params = get_operational_parameters(Data, operational_parameters)
-    base_timing = drilling_time_breakdown(Data, Mesh, l1, R) if drilling_timing is None else drilling_timing
-    elements = ax.trajectory_elements(Data, l1, R, ds_target=Data.drilling_time_parameters["trajectory_step"])
-    rows = base_timing["elements"]
-    if len(elements) != len(rows):
-        raise ValueError("The operational module expected the same number of geometric and timing elements.")
+    base_timing = (
+        drilling_time_breakdown(Data, Mesh, l1, R, detail=False)
+        if drilling_timing is None
+        else drilling_timing
+    )
+    # Work from the columns the timing pass already produced: it discretised this
+    # trajectory and queried the geology once, and the per-element dictionaries are
+    # only built when someone asks to print them.
+    columns = base_timing["arrays"]
+    element_length = columns["element_length_m"]
+    element_time = columns["time_h"]
+    element_depth_end = columns["depth_end_m"]
+    element_dls = columns["dls_deg_per_30m"]
+    element_torque = columns["cumulative_torque_Nm"]
+    n_elements = int(element_length.size)
 
     torque_reference = float(Data.drilling_time_parameters.get("torque_limit", 1.0))
+    drilling_lithology = debounce_lithology(
+        columns["lithology"], element_length, float(params.get("lithology_min_run_m", 0.0))
+    )
+    wear_increments = bit_wear_increments(
+        element_length, columns["lithology"], element_dls, element_torque, params, torque_reference
+    )
     events = []
     total_trip_time_h = 0.0
     total_routine_time_h = 0.0
@@ -343,22 +404,23 @@ def operational_time_breakdown(
     drilled_since_routine_m = 0.0
     drilled_since_last_bit_trip_m = 0.0
     previous_lithology = None
-    previous_tvd_m = float(Data.P0[1])
+    previous_tvd_m = float(Data.P0[2])
     pending_casing_events = deepcopy(params["casing_events"])
     merge_distance_m = float(params.get("operation_merge_distance_m", 30.0))
+    min_trip_spacing_m = float(params.get("min_spacing_between_bit_trips_m", 0.0))
     last_bit_reset_measured_depth_m = None
 
-    for element, row in zip(elements, rows):
-        ds = float(row["element_length_m"])
-        depth_end_m = max(float(element["y0"]), float(element["y1"]))
+    for index in range(n_elements):
+        row_lithology = drilling_lithology[index]
+        ds = float(element_length[index])
+        depth_end_m = float(element_depth_end[index])
         measured_depth_m += ds
         drilled_since_last_bit_trip_m += ds
         drilled_since_routine_m += ds
-        base_time_since_bit_trip_h += float(row["time_h"])
+        base_time_since_bit_trip_h += float(element_time[index])
 
-        wear_increment, _ = _bit_wear_increment(row, params, torque_reference, previous_lithology)
-        equivalent_bit_run_m += wear_increment
-        lithology_changed = previous_lithology is not None and row["lithology"] != previous_lithology
+        equivalent_bit_run_m += float(wear_increments[index])
+        lithology_changed = previous_lithology is not None and row_lithology != previous_lithology
         bit_was_reset_this_element = False
 
         while pending_casing_events and previous_tvd_m < pending_casing_events[0]["depth_m"] <= depth_end_m:
@@ -418,9 +480,12 @@ def operational_time_breakdown(
         bit_run_time_limit_h = params.get("bit_run_time_limit_h")
         reached_time_limit = False if bit_run_time_limit_h is None else base_time_since_bit_trip_h >= float(bit_run_time_limit_h)
 
+        # A lithology transition does not justify its own trip if the bit was just
+        # pulled anyway, nor before the minimum spacing between bit changes.
         recent_bit_reset_nearby = (
             last_bit_reset_measured_depth_m is not None
-            and abs(float(measured_depth_m) - float(last_bit_reset_measured_depth_m)) <= merge_distance_m
+            and abs(float(measured_depth_m) - float(last_bit_reset_measured_depth_m))
+            <= max(merge_distance_m, min_trip_spacing_m)
         )
         upcoming_casing_nearby = (
             bool(pending_casing_events)
@@ -434,13 +499,13 @@ def operational_time_breakdown(
         if not bit_was_reset_this_element and not lithology_trip_merged_with_nearby_operation:
             if lithology_changed and bool(params["bit_trip_on_lithology_change"]):
                 if reached_run_limit and reached_time_limit:
-                    bit_trip_cause = f"Bit change due to lithology transition from {previous_lithology} to {row['lithology']} and equivalent run-length/time limits"
+                    bit_trip_cause = f"Bit change due to lithology transition from {previous_lithology} to {row_lithology} and equivalent run-length/time limits"
                 elif reached_run_limit:
-                    bit_trip_cause = f"Bit change due to lithology transition from {previous_lithology} to {row['lithology']} and equivalent run-length limit"
+                    bit_trip_cause = f"Bit change due to lithology transition from {previous_lithology} to {row_lithology} and equivalent run-length limit"
                 elif reached_time_limit:
-                    bit_trip_cause = f"Bit change due to lithology transition from {previous_lithology} to {row['lithology']} and run-time limit"
+                    bit_trip_cause = f"Bit change due to lithology transition from {previous_lithology} to {row_lithology} and run-time limit"
                 else:
-                    bit_trip_cause = f"Bit change due to lithology transition from {previous_lithology} to {row['lithology']}"
+                    bit_trip_cause = f"Bit change due to lithology transition from {previous_lithology} to {row_lithology}"
             elif reached_run_limit and reached_time_limit:
                 bit_trip_cause = "Bit change due to equivalent run-length and run-time limits"
             elif reached_run_limit:
@@ -470,7 +535,7 @@ def operational_time_breakdown(
             drilled_since_last_bit_trip_m = 0.0
             last_bit_reset_measured_depth_m = float(measured_depth_m)
 
-        previous_lithology = row["lithology"]
+        previous_lithology = row_lithology
         previous_tvd_m = depth_end_m
 
     total_operational_time_h = float(total_trip_time_h + total_routine_time_h + total_casing_time_h + total_transition_time_h)
@@ -500,7 +565,6 @@ def operational_time_breakdown(
         "by_category": by_category,
         "base_timing": base_timing,
     }
-
 
 def operational_time_table(Data, Mesh, l1: float, R: float, operational_parameters: dict | None = None) -> None:
     result = operational_time_breakdown(Data, Mesh, l1, R, operational_parameters=operational_parameters)
@@ -561,18 +625,23 @@ def _scan_constrained_drilling_time_candidates(Data, Mesh, mechanical_limits: di
         return _OPERATIONAL_CACHE[key]
 
     candidates = []
-    for candidate in _scan_candidates(Data):
+    for candidate in _scan_candidates(Data, Mesh):
         evaluation = evaluate_mechanical_limits(candidate["up_force_1"], candidate["torque"], limits)
         if not evaluation["is_valid"]:
             continue
         try:
-            timing = drilling_time_breakdown(Data, Mesh, candidate["l1"], candidate["R"])
+            # Summary only: the full per-element breakdown of the winner is rebuilt
+            # on demand, instead of caching it for every candidate.
+            timing = drilling_time_breakdown(Data, Mesh, candidate["l1"], candidate["R"], detail=False)
             merged = dict(candidate)
             merged.update(
                 {
                     "drilling_time_h": float(timing["total_time_h"]),
                     "average_rop_mph": float(timing["average_rop_mph"]),
-                    "timing": timing,
+                    "average_wob_N": float(timing["average_wob_N"]),
+                    "average_dls_deg_per_30m": float(timing["average_dls_deg_per_30m"]),
+                    "total_length_m": float(timing["total_length_m"]),
+                    "max_cumulative_torque_Nm": float(timing["max_cumulative_torque_Nm"]),
                     "mechanical_limits": limits,
                 }
             )
@@ -601,7 +670,7 @@ def constrained_drilling_time_informations(Data, Mesh, mechanical_limits: dict |
 
 def constrained_drilling_time_information_table(Data, Mesh, mechanical_limits: dict | None = None) -> None:
     best = constrained_drilling_time_informations(Data, Mesh, mechanical_limits=mechanical_limits)
-    timing = best["timing"]
+    timing = best
     summary = pd.DataFrame(
         {
             "Value": np.round(
@@ -663,12 +732,12 @@ def _scan_total_time_candidates(
         return _OPERATIONAL_CACHE[key]
 
     candidates = []
-    for candidate in _scan_candidates(Data):
+    for candidate in _scan_candidates(Data, Mesh):
         evaluation = evaluate_mechanical_limits(candidate["up_force_1"], candidate["torque"], limits)
         if not evaluation["is_valid"]:
             continue
         try:
-            base_timing = drilling_time_breakdown(Data, Mesh, candidate["l1"], candidate["R"])
+            base_timing = drilling_time_breakdown(Data, Mesh, candidate["l1"], candidate["R"], detail=False)
             operational = operational_time_breakdown(
                 Data,
                 Mesh,
@@ -791,8 +860,8 @@ def total_time_for_best_existing_trajectories_table(
     operational_parameters: dict | None = None,
     mechanical_limits: dict | None = None,
 ) -> None:
-    force_l1, force_R = minimal_tension(Data)
-    torque_l1, torque_R = minimal_torque(Data)
+    force_l1, force_R = minimal_tension(Data, Mesh)
+    torque_l1, torque_R = minimal_torque(Data, Mesh)
     drill_l1, drill_R = minimal_constrained_drilling_time(Data, Mesh, mechanical_limits=mechanical_limits)
     total_l1, total_R = minimal_total_time(
         Data,
@@ -835,8 +904,8 @@ def total_time_for_best_existing_trajectories_table(
 # Plot helpers for 4 conditions
 # ==========================
 
-def _best_mechanical_candidates(Data) -> tuple[dict, dict]:
-    mech_candidates = _scan_candidates(Data)
+def _best_mechanical_candidates(Data, Mesh=None) -> tuple[dict, dict]:
+    mech_candidates = _scan_candidates(Data, Mesh)
     if not mech_candidates:
         raise ValueError("No valid mechanical candidates were found.")
     best_force = min(mech_candidates, key=lambda item: item["up_force_1"])
@@ -878,7 +947,7 @@ def _series_varying_radius_for_fixed_l1(
     operational_parameters: dict | None = None,
     mechanical_limits: dict | None = None,
 ) -> dict:
-    mech_candidates = _scan_candidates(Data)
+    mech_candidates = _scan_candidates(Data, Mesh)
     time_candidates = _scan_constrained_drilling_time_candidates(Data, Mesh, mechanical_limits=mechanical_limits)
     total_candidates = _scan_total_time_candidates(
         Data,
@@ -937,7 +1006,7 @@ def _series_varying_l1_for_fixed_radius(
     operational_parameters: dict | None = None,
     mechanical_limits: dict | None = None,
 ) -> dict:
-    mech_candidates = _scan_candidates(Data)
+    mech_candidates = _scan_candidates(Data, Mesh)
     time_candidates = _scan_constrained_drilling_time_candidates(Data, Mesh, mechanical_limits=mechanical_limits)
     total_candidates = _scan_total_time_candidates(
         Data,
@@ -992,7 +1061,7 @@ def _series_best_metric_for_each_l1(
     operational_parameters: dict | None = None,
     mechanical_limits: dict | None = None,
 ) -> dict:
-    mech_candidates = _scan_candidates(Data)
+    mech_candidates = _scan_candidates(Data, Mesh)
     time_candidates = _scan_constrained_drilling_time_candidates(Data, Mesh, mechanical_limits=mechanical_limits)
     total_candidates = _scan_total_time_candidates(
         Data,
@@ -1106,7 +1175,7 @@ def plot_metrics_vs_radius_for_best_l1_4_conditions(
     operational_parameters: dict | None = None,
     mechanical_limits: dict | None = None,
 ) -> None:
-    best_force, best_torque = _best_mechanical_candidates(Data)
+    best_force, best_torque = _best_mechanical_candidates(Data, Mesh)
     best_time = _best_constrained_time_candidate(Data, Mesh, mechanical_limits=mechanical_limits)
     best_total = _best_total_time_candidate(
         Data,
@@ -1133,7 +1202,7 @@ def plot_metrics_vs_l1_for_best_r_4_conditions(
     operational_parameters: dict | None = None,
     mechanical_limits: dict | None = None,
 ) -> None:
-    best_force, best_torque = _best_mechanical_candidates(Data)
+    best_force, best_torque = _best_mechanical_candidates(Data, Mesh)
     best_time = _best_constrained_time_candidate(Data, Mesh, mechanical_limits=mechanical_limits)
     best_total = _best_total_time_candidate(
         Data,

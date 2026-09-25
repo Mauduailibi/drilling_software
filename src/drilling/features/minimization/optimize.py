@@ -27,8 +27,8 @@ def calculate_minimization(data, geological_mesh, operational_parameters, mechan
     ----------
     data : DataSet
         Entradas mecânicas e de tempo de broca.
-    geological_mesh : mesh
-        Intervalos de litologia e valores de ROP.
+    geological_mesh : HorizonModel
+        Modelo geológico com ROP (e ``mu``, para ``friction_model="lithology"``).
     operational_parameters : dict
         Sobreposição de manobras, revestimento e limites de corrida da broca.
     mechanical_limits : dict
@@ -40,7 +40,7 @@ def calculate_minimization(data, geological_mesh, operational_parameters, mechan
         Mapeamento com ``results`` (um registro por objetivo) e ``series``
         (famílias de curvas em raio, L1 e melhor-por-L1).
     """
-    best_force, best_torque = _best_mechanical_candidates(data)
+    best_force, best_torque = _best_mechanical_candidates(data, geological_mesh)
     best_time = _best_constrained_time_candidate(data, geological_mesh, mechanical_limits=mechanical_limits)
     best_total = _best_total_time_candidate(
         data,

@@ -139,8 +139,9 @@ def build_default_mesh():
 
     Returns
     -------
-    mesh
-        Intervalos de profundidade sem sobreposição usados pela aba Minimization.
+    HorizonModel
+        Modelo plano (intervalos de profundidade sem sobreposição) usado pela
+        aba Minimization.
     """
     return mesh(
         sandstone=[[0, 100], [400, 500], [900, 1600], [2200, 3000]],
