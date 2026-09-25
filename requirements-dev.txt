@@ -1,0 +1,8 @@
+# Ferramentas de desenvolvimento para testes golden e documentação da API.
+# Instale com:
+#   pip install -r requirements-dev.txt
+# ou:
+#   pip install -e ".[dev]"
+-r requirements.txt
+pytest>=8.0
+pdoc>=15.0
