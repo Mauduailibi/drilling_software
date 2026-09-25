@@ -114,8 +114,8 @@ def build_default_data():
     }
     operational_parameters = build_default_operational_parameters()
     data = DataSet(
-        (0, 0),
-        (1000, 3000),
+        (0.0, 0.0, 0.0),
+        (1000.0, 0.0, 3000.0),
         1737.5,
         8000,
         8000,
