@@ -14,9 +14,10 @@ build/
 dist/
 
 # ==========================================
-# Documentação gerada
+# Documentação e resultados gerados
 # ==========================================
 docs/api/
+outputs/
 
 # ==========================================
 # VS Code e OS
