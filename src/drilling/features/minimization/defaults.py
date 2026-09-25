@@ -60,6 +60,8 @@ OPERATIONAL_FIELD_SPECS = [
     FieldSpec("fatigue_torque_ratio_threshold", "Fatigue torque ratio", step=0.01, maximum=2.0),
     FieldSpec("fatigue_torque_multiplier", "Fatigue torque multiplier", step=0.01),
     FieldSpec("bit_trip_on_lithology_change", "Bit trip on lithology change", kind="bool"),
+    FieldSpec("lithology_min_run_m", "Min lithology run for bit trip", "m", step=1.0),
+    FieldSpec("min_spacing_between_bit_trips_m", "Min spacing between bit trips", "m", step=10.0),
     FieldSpec("operation_merge_distance_m", "Operation merge distance", "m", step=1.0),
     FieldSpec("casing_connection_length_m", "Casing connection length", "m", step=0.1),
     FieldSpec("casing_connection_time_h", "Casing connection time", "h", step=0.01, decimals=4),

@@ -81,15 +81,17 @@ def test_minimization_defaults_are_the_gui_contract() -> None:
     data, operational = build_default_data()
     mesh = build_default_mesh()
     merged = build_default_operational_parameters()
-    assert data.P0 == (0, 0)
-    assert data.P3 == (1000, 3000)
+    assert data.P0 == (0.0, 0.0, 0.0)
+    assert data.P3 == (1000.0, 0.0, 3000.0)
+    assert data.friction_model == "constant"
     assert data.min_l1 == 100.0
     assert data.l1_step == 10.0
     assert data.radius_step == 50.0
     assert data.drilling_time_parameters["trajectory_step"] == 1.0
     assert operational["casing_events"][0]["depth_m"] == 2000.0
     assert merged["lithology_wear_factors"]["Sandstone"] == DEFAULT_OPERATIONAL_PARAMETERS["lithology_wear_factors"]["Sandstone"]
-    assert mesh.rop_values["Sandstone"] == 18.0
+    assert mesh.property_values("rop")["Sandstone"] == 18.0
+    assert mesh.is_flat
 
 
 def test_field_specs_cover_known_keys() -> None:
