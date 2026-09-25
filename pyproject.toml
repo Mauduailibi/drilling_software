@@ -38,5 +38,5 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra --strict-markers --tb=short"
 markers = [
-    "slow: testes golden da otimização na malha completa (~15 min)",
+    "slow: testes golden da otimização na malha completa L1 × R",
 ]

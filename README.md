@@ -37,18 +37,20 @@ Atalhos equivalentes: `python -m drilling` e o script `drilling` instalado pelo 
 Os snapshots em `tests/goldens/` registram os números atuais dos defaults. Tolerância: `1e-10`.
 
 ```bash
-# Rápido: Cases 1–3, ponto L1=1200 m / R=500 m, ótimos mecânicos
+# Tudo, inclusive os quatro objetivos no grid L1 × R (~20 s)
 pytest
 
-# Completo: também os quatro objetivos no grid L1 × R (~15 min)
-pytest -m slow
+# Sem as varreduras completas do grid
+pytest -m "not slow"
 ```
+
+`tests/test_geology.py` valida o modelo geológico 3D: heterogeneidade lateral, regressão das camadas planas contra a implementação antiga, soft-string contra a solução fechada e o filtro de manobras por litologia.
 
 Regenerar snapshots **somente** se a mudança numérica for intencional:
 
 ```bash
 python scripts/capture_goldens.py        # rápido
-python scripts/capture_goldens.py --slow # inclui os 4 ótimos
+python scripts/capture_goldens.py --slow # inclui os 4 ótimos (alguns minutos)
 ```
 
 ## Scripts de pesquisa
@@ -68,6 +70,28 @@ python scripts/sensitivity/post2_torque.py
 ```
 
 Os modelos geológicos de exemplo (`flat`, `dipping`, `facies`) ficam em `scripts/example_meshes.py`.
+
+## Fluxo de trabalho
+
+Todo o desenvolvimento acontece neste repositório, inclusive features novas da otimização (não há mais uma cópia separada do código).
+
+1. `main` é sempre estável: `pytest` passa e a GUI abre.
+2. Cada mudança nasce em uma branch a partir de `main` atualizada:
+   - `feature/<nome>` para funcionalidades (ex.: `feature/geology-editor`);
+   - `fix/<nome>` para correções;
+   - `docs/<nome>` para documentação.
+3. Commits em inglês, no imperativo, com uma frase de título terminada em ponto e um corpo explicando o porquê.
+4. Para testar e visualizar, use ou crie um script em `scripts/` (saídas em `outputs/`). Se o resultado virar referência, transforme-o em teste em `tests/`.
+5. Mudança numérica intencional: regenere os goldens com `scripts/capture_goldens.py` em um commit próprio, explicando o que mudou e por quê.
+6. Abra um Pull Request para `main`, com `pytest` passando; outra pessoa do grupo revisa antes do merge.
+
+```bash
+git switch main && git pull
+git switch -c feature/minha-feature
+# ... código, scripts, testes ...
+pytest
+git push -u origin feature/minha-feature   # e abra o PR no GitHub
+```
 
 ## Documentação da API
 
