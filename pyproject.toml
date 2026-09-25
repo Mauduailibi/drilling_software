@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drilling-software"
+version = "0.1.0"
+description = "Software desktop para correção de trajetória e otimização de trajetória Tipo 1."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.5.0",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "pandas",
+    "pyvista",
+    "pyvistaqt",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pdoc>=15.0",
+]
+
+[project.scripts]
+drilling = "drilling.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra --strict-markers --tb=short"
+markers = [
+    "slow: testes golden da otimização na malha completa (~15 min)",
+]

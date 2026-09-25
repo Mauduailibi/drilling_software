@@ -1,3 +1,16 @@
+"""Tempo operacional, limites mecânicos e construtores das séries dos quatro objetivos.
+
+Funções públicas usadas pela GUI
+--------------------------------
+``operational_time_breakdown``, ``evaluate_mechanical_limits``,
+``get_operational_parameters``, ``get_mechanical_limits``.
+
+Os auxiliares prefixados com sublinhado ``_best_*`` e ``_series_*`` ainda
+são importados por ``optimize.calculate_minimization``. Não são uma API
+externa estável.
+
+Fórmulas e números operacionais padrão estão congelados pelos testes golden.
+"""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -6,8 +19,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-import features.minimization.Auxiliaries as ax
-from features.minimization.Minimal import (
+import drilling.features.minimization.auxiliaries as ax
+from drilling.features.minimization.minimal import (
     DEFAULT_STYLE,
     _scan_candidates,
     drilling_time_breakdown,
@@ -290,6 +303,26 @@ def operational_time_breakdown(
     drilling_timing: dict | None = None,
     operational_parameters: dict | None = None,
 ) -> dict:
+    """Soma manobras, paradas de rotina e eventos de revestimento ao tempo puro de broca.
+
+    Parameters
+    ----------
+    Data : DataSet
+        Dados mecânicos usados na decomposição das manobras de tubo.
+    Mesh : mesh
+        Intervalos de litologia (mudanças de litologia podem disparar manobra de broca).
+    l1, R : float
+        Configuração em cronometragem.
+    drilling_timing : dict or None, optional
+        ``drilling_time_breakdown`` pré-calculado. Recalculado se omitido.
+    operational_parameters : dict or None, optional
+        Sobreposição mesclada com ``DEFAULT_OPERATIONAL_PARAMETERS``.
+
+    Returns
+    -------
+    dict
+        Eventos operacionais, totais por categoria e ``total_time_h``.
+    """
     params = get_operational_parameters(Data, operational_parameters)
     base_timing = drilling_time_breakdown(Data, Mesh, l1, R) if drilling_timing is None else drilling_timing
     elements = ax.trajectory_elements(Data, l1, R, ds_target=Data.drilling_time_parameters["trajectory_step"])

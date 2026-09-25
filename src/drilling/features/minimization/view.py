@@ -1,6 +1,10 @@
-from __future__ import annotations
+"""Aba Qt da otimização de trajetória Tipo 1.
 
-from copy import deepcopy
+Os widgets de entrada montam um ``DataSet`` e uma ``mesh`` geológica; em
+seguida um ``QThread`` chama ``optimize.calculate_minimization``. A
+plotagem permanece em ``plot.py``.
+"""
+from __future__ import annotations
 
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -29,108 +33,25 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
 )
 
-import features.minimization.Auxiliaries as ax
-from features.minimization.Data_base import DataSet, mesh
-from features.minimization.Minimal import drilling_time_breakdown
-from features.minimization.Operational import (
-    DEFAULT_MECHANICAL_LIMITS,
-    DEFAULT_OPERATIONAL_PARAMETERS,
-    _best_constrained_time_candidate,
-    _best_mechanical_candidates,
-    _best_total_time_candidate,
-    _series_best_metric_for_each_l1,
-    _series_varying_l1_for_fixed_radius,
-    _series_varying_radius_for_fixed_l1,
-    evaluate_mechanical_limits,
-    operational_time_breakdown,
+from drilling.core import Point2D, format_pair, parse_pair
+from drilling.features.minimization.data_base import DataSet, mesh
+from drilling.features.minimization.defaults import (
+    DRILLING_TIME_FIELD_SPECS,
+    LITHOLOGIES,
+    OPERATIONAL_FIELD_SPECS,
+    build_default_data,
+    build_default_mesh,
 )
-from features.minimization.plot import (
+from drilling.features.minimization.optimize import calculate_minimization
+from drilling.features.minimization.operational import DEFAULT_MECHANICAL_LIMITS
+from drilling.features.minimization.plot import (
     OBJECTIVE_STYLES,
     plot_global_curves,
     plot_time_breakdown,
     plot_trajectories,
     use_default_matplotlib_style,
 )
-
-
-LITHOLOGIES = ["Shale", "Siltstone", "Sandstone", "Limestone", "Dolomite", "Evaporite"]
-
-
-def build_default_data():
-    drilling_time_parameters = {
-        "trajectory_step": 1.0,
-        "reference_dls_deg_per_30m": 3.0,
-        "surface_wob": 1.60e5,
-        "optimal_wob": 1.80e5,
-        "torque_limit": 1.20e4,
-        "mesh_plot_alpha": 0.45,
-    }
-    operational_parameters = {
-        "trip_fixed_time_h": 1.0,
-        "trip_speed_drillpipe_mph": 500.0,
-        "trip_speed_heavypipe_mph": 250.0,
-        "trip_speed_command_mph": 150.0,
-        "bit_run_length_limit_m": 900.0,
-        "bit_run_time_limit_h": None,
-        "routine_stop_every_m": 500.0,
-        "routine_stop_time_h": 0.5,
-        "fatigue_dls_threshold_deg_per_30m": 3.0,
-        "fatigue_dls_multiplier": 0.30,
-        "fatigue_torque_ratio_threshold": 0.75,
-        "fatigue_torque_multiplier": 0.35,
-        "bit_trip_on_lithology_change": True,
-        "operation_merge_distance_m": 10.0,
-        "casing_connection_length_m": 9.0,
-        "casing_connection_time_h": 0.10,
-        "casing_trip_speed_mph": 300.0,
-        "casing_logging_time_h": 5.0,
-        "cement_pumping_time_h": 2.5,
-        "cement_curing_time_h": 12.0,
-        "casing_events": [
-            {
-                "depth_m": 2000.0,
-                "name": "Casing shoe / cementing",
-                "fixed_time_h": 10.0,
-                "include_trip": True,
-            }
-        ],
-    }
-    data = DataSet(
-        (0, 0),
-        (1000, 3000),
-        1737.5,
-        8000,
-        8000,
-        8000,
-        (0.2032, 0.1143),
-        (0.127, 0.1086104),
-        (0.1524, 0.1143),
-        36,
-        0.23,
-        (5000 * 8) * 4.44822,
-        2300,
-        (100, 600),
-        drilling_time_parameters=drilling_time_parameters,
-    )
-    data.l1_step = 10.0
-    data.radius_step = 50.0
-    data.min_l1 = 100.0
-    return data, operational_parameters
-
-
-def build_default_mesh():
-    return mesh(
-        sandstone=[[0, 100], [400, 500], [900, 1600], [2200, 3000]],
-        dolomite=[[100, 200], [1600, 2000]],
-        evaporite=[[200, 300], [2000, 2200]],
-        limestone=[[300, 400], [500, 900]],
-        rop_values={
-            "Sandstone": 18.0,
-            "Limestone": 11.0,
-            "Dolomite": 9.5,
-            "Evaporite": 24.0,
-        },
-    )
+from drilling.gui.param_form import ParamForm
 
 
 def _round(value, digits=3):
@@ -145,6 +66,8 @@ def _round(value, digits=3):
 
 
 class OptimizationWorker(QObject):
+    """Executa ``calculate_minimization`` fora da thread da GUI."""
+
     finished = Signal(dict)
     failed = Signal(str)
 
@@ -162,87 +85,17 @@ class OptimizationWorker(QObject):
             self.failed.emit(str(exc))
 
 
-def calculate_minimization(data, geological_mesh, operational_parameters, mechanical_limits):
-    best_force, best_torque = _best_mechanical_candidates(data)
-    best_time = _best_constrained_time_candidate(data, geological_mesh, mechanical_limits=mechanical_limits)
-    best_total = _best_total_time_candidate(
-        data,
-        geological_mesh,
-        operational_parameters=operational_parameters,
-        mechanical_limits=mechanical_limits,
-    )
-
-    selected = {
-        "force": best_force,
-        "torque": best_torque,
-        "time": best_time,
-        "total": best_total,
-    }
-
-    results = {}
-    for key, candidate in selected.items():
-        l1 = float(candidate["l1"])
-        radius = float(candidate["R"])
-        timing = candidate.get("timing") or drilling_time_breakdown(data, geological_mesh, l1, radius)
-        operational = candidate.get("operational") or operational_time_breakdown(
-            data,
-            geological_mesh,
-            l1,
-            radius,
-            drilling_timing=timing,
-            operational_parameters=operational_parameters,
-        )
-        mechanical = evaluate_mechanical_limits(candidate["up_force_1"], candidate["torque"], mechanical_limits)
-        results[key] = {
-            **candidate,
-            "l1": l1,
-            "R": radius,
-            "timing": timing,
-            "operational": operational,
-            "mechanical": mechanical,
-            "drilling_time_h": float(timing["total_time_h"]),
-            "operational_time_h": float(operational["total_operational_time_h"]),
-            "total_time_h": float(operational["total_time_h"]),
-        }
-
-    series = {
-        "radius": _series_varying_radius_for_fixed_l1(
-            data,
-            geological_mesh,
-            l1_force=best_force["l1"],
-            l1_torque=best_torque["l1"],
-            l1_time=best_time["l1"],
-            l1_total=best_total["l1"],
-            operational_parameters=operational_parameters,
-            mechanical_limits=mechanical_limits,
-        ),
-        "l1": _series_varying_l1_for_fixed_radius(
-            data,
-            geological_mesh,
-            r_force=best_force["R"],
-            r_torque=best_torque["R"],
-            r_time=best_time["R"],
-            r_total=best_total["R"],
-            operational_parameters=operational_parameters,
-            mechanical_limits=mechanical_limits,
-        ),
-        "best_per_l1": _series_best_metric_for_each_l1(
-            data,
-            geological_mesh,
-            operational_parameters=operational_parameters,
-            mechanical_limits=mechanical_limits,
-        ),
-    }
-    return {"data": data, "mesh": geological_mesh, "operational_parameters": operational_parameters, "mechanical_limits": mechanical_limits, "results": results, "series": series}
-
-
 class MinimizationView(QWidget):
+    """Painel de entradas com rolagem e abas de resultado (resumo, trajetórias, curvas)."""
+
     def __init__(self):
         super().__init__()
         use_default_matplotlib_style()
         self.current_payload = None
         self.thread = None
         self.worker = None
+        self.default_data, self.default_operational = build_default_data()
+        self.default_mesh = build_default_mesh()
         self.setObjectName("MinimizationView")
         self.setup_ui()
 
@@ -403,15 +256,16 @@ class MinimizationView(QWidget):
     def geometry_group(self):
         group = QGroupBox("General drilling geometry")
         form = QFormLayout(group)
-        self.p0_input = QLineEdit("0, 0")
-        self.p3_input = QLineEdit("1000, 3000")
-        self.max_l1 = self.spin(2300, 1, 100000, 1)
-        self.min_l1 = self.spin(100, 1, 100000, 1)
-        self.min_radius = self.spin(100, 1, 100000, 1)
-        self.max_radius = self.spin(600, 1, 100000, 1)
-        self.l1_step = self.spin(10, 0.1, 10000, 1)
-        self.radius_step = self.spin(50, 0.1, 10000, 1)
-        self.angle_limit = self.spin(52, 1, 89, 1)
+        data = self.default_data
+        self.p0_input = QLineEdit(format_pair(data.P0))
+        self.p3_input = QLineEdit(format_pair(data.P3))
+        self.max_l1 = self.spin(data.max, 1, 100000, 1)
+        self.min_l1 = self.spin(data.min_l1, 1, 100000, 1)
+        self.min_radius = self.spin(data.min_radius, 1, 100000, 1)
+        self.max_radius = self.spin(data.max_radius, 1, 100000, 1)
+        self.l1_step = self.spin(data.l1_step, 0.1, 10000, 1)
+        self.radius_step = self.spin(data.radius_step, 0.1, 10000, 1)
+        self.angle_limit = self.spin(data.angle_limit_deg, 1, 89, 1)
         form.addRow("P0 (x, y)", self.p0_input)
         form.addRow("P3 target (x, y)", self.p3_input)
         form.addRow("Max L1 (m)", self.max_l1)
@@ -426,16 +280,17 @@ class MinimizationView(QWidget):
     def mechanical_group(self):
         group = QGroupBox("Mechanical inputs")
         form = QFormLayout(group)
-        self.ro_fluid = self.spin(1737.5, 0, 50000, 1)
-        self.ro_command = self.spin(8000, 0, 50000, 1)
-        self.ro_drillpipe = self.spin(8000, 0, 50000, 1)
-        self.ro_heavypipe = self.spin(8000, 0, 50000, 1)
-        self.diam_command = QLineEdit("0.2032, 0.1143")
-        self.diam_drillpipe = QLineEdit("0.127, 0.1086104")
-        self.diam_heavypipe = QLineEdit("0.1524, 0.1143")
-        self.lp = self.spin(36, 0.1, 100000, 1)
-        self.friction = self.spin(0.23, 0, 10, 0.01, decimals=4)
-        self.z_force = self.spin((5000 * 8) * 4.44822, 0, 1e9, 100)
+        data = self.default_data
+        self.ro_fluid = self.spin(data.ro_fluid, 0, 50000, 1)
+        self.ro_command = self.spin(data.ro_command, 0, 50000, 1)
+        self.ro_drillpipe = self.spin(data.ro_drillpipe, 0, 50000, 1)
+        self.ro_heavypipe = self.spin(data.ro_heavypipe, 0, 50000, 1)
+        self.diam_command = QLineEdit(format_pair((data.d_ext_command, data.d_int_command)))
+        self.diam_drillpipe = QLineEdit(format_pair((data.d_ext_drill, data.d_int_drill)))
+        self.diam_heavypipe = QLineEdit(format_pair((data.d_ext_heavy, data.d_int_heavy)))
+        self.lp = self.spin(data.lp, 0.1, 100000, 1)
+        self.friction = self.spin(data.µ, 0, 10, 0.01, decimals=4)
+        self.z_force = self.spin(data.z, 0, 1e9, 100)
         form.addRow("Fluid density", self.ro_fluid)
         form.addRow("Command density", self.ro_command)
         form.addRow("Drillpipe density", self.ro_drillpipe)
@@ -451,15 +306,8 @@ class MinimizationView(QWidget):
     def drilling_time_group(self):
         group = QGroupBox("Drilling-time parameters")
         layout = QVBoxLayout(group)
-        self.time_params_table = QTableWidget(0, 2)
-        self.time_params_table.setHorizontalHeaderLabels(["Parameter", "Value"])
-        self.setup_table(self.time_params_table)
-        self.time_params_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
-        self.time_params_table.setMinimumHeight(300)
-        defaults = deepcopy(DataSet((0, 0), (1000, 3000), 1737.5, 8000, 8000, 8000, (0.2032, 0.1143), (0.127, 0.1086104), (0.1524, 0.1143), 36, 0.23, 1, 2300, (100, 600)).drilling_time_parameters)
-        defaults.update(build_default_data()[0].drilling_time_parameters)
-        self.fill_key_value_table(self.time_params_table, defaults)
-        layout.addWidget(self.time_params_table)
+        self.time_form = ParamForm(DRILLING_TIME_FIELD_SPECS, self.default_data.drilling_time_parameters)
+        layout.addLayout(self.time_form.layout)
         return group
 
     def mesh_group(self):
@@ -479,7 +327,7 @@ class MinimizationView(QWidget):
         self.setup_table(self.mesh_table)
         self.mesh_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         self.mesh_table.setMinimumHeight(340)
-        default_mesh = build_default_mesh()
+        default_mesh = self.default_mesh
         for segment in default_mesh.segments:
             self.add_mesh_row(segment["lithology"], segment["start"], segment["end"], segment["rop"])
         layout.addWidget(self.mesh_table)
@@ -488,24 +336,16 @@ class MinimizationView(QWidget):
     def operations_group(self):
         group = QGroupBox("Operational inputs")
         layout = QVBoxLayout(group)
-        self.operation_params_table = QTableWidget(0, 2)
-        self.operation_params_table.setHorizontalHeaderLabels(["Parameter", "Value"])
-        self.setup_table(self.operation_params_table)
-        self.operation_params_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
-        self.operation_params_table.setMinimumHeight(300)
-        operational_parameters = deepcopy(DEFAULT_OPERATIONAL_PARAMETERS)
-        default_data, defaults = build_default_data()
-        operational_parameters.update(defaults)
-        simple_params = {key: value for key, value in operational_parameters.items() if key not in {"casing_events", "lithology_wear_factors"}}
-        self.fill_key_value_table(self.operation_params_table, simple_params)
-        layout.addWidget(self.operation_params_table)
+        operational = self.default_operational
+        self.operation_form = ParamForm(OPERATIONAL_FIELD_SPECS, operational)
+        layout.addLayout(self.operation_form.layout)
 
         self.casing_table = QTableWidget(0, 4)
         self.casing_table.setHorizontalHeaderLabels(["Depth (m)", "Name", "Fixed time (h)", "Include trip"])
         self.setup_table(self.casing_table)
         self.casing_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         self.casing_table.setMinimumHeight(120)
-        for event in defaults["casing_events"]:
+        for event in operational["casing_events"]:
             self.add_casing_row(event["depth_m"], event["name"], event["fixed_time_h"], event["include_trip"])
         layout.addWidget(QLabel("Casing / cementing events"))
         layout.addWidget(self.casing_table)
@@ -519,14 +359,31 @@ class MinimizationView(QWidget):
         casing_buttons.addWidget(remove_casing)
         layout.addLayout(casing_buttons)
 
-        self.wear_table = QTableWidget(0, 2)
-        self.wear_table.setHorizontalHeaderLabels(["Lithology", "Wear factor"])
-        self.setup_table(self.wear_table)
-        self.wear_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
-        self.wear_table.setMinimumHeight(150)
-        self.fill_key_value_table(self.wear_table, DEFAULT_OPERATIONAL_PARAMETERS["lithology_wear_factors"])
-        layout.addWidget(QLabel("Lithology wear factors"))
-        layout.addWidget(self.wear_table)
+        wear_group = QGroupBox("Lithology wear factors")
+        wear_form = QFormLayout(wear_group)
+        self.wear_spins = {}
+        wear = operational["lithology_wear_factors"]
+        for name in list(LITHOLOGIES) + ["Undefined"]:
+            spin = self.spin(wear.get(name, 1.0), 0, 10, 0.01, decimals=4)
+            self.wear_spins[name] = spin
+            wear_form.addRow(name, spin)
+        layout.addWidget(wear_group)
+        return group
+
+    def limits_group(self):
+        group = QGroupBox("Mechanical limits")
+        form = QFormLayout(group)
+        self.max_top_force = QLineEdit("")
+        self.max_torque = QLineEdit("")
+        self.max_top_force.setPlaceholderText("Optional")
+        self.max_torque.setPlaceholderText("Optional")
+        defaults = DEFAULT_MECHANICAL_LIMITS
+        if defaults["max_top_axial_force_N"] is not None:
+            self.max_top_force.setText(str(defaults["max_top_axial_force_N"]))
+        if defaults["max_torque_Nm"] is not None:
+            self.max_torque.setText(str(defaults["max_torque_Nm"]))
+        form.addRow("Max top axial force (N)", self.max_top_force)
+        form.addRow("Max torque (N*m)", self.max_torque)
         return group
 
     def limits_group(self):
@@ -554,33 +411,7 @@ class MinimizationView(QWidget):
         return widget
 
     def parse_pair(self, text):
-        parts = [float(value.strip()) for value in text.split(",")]
-        if len(parts) != 2:
-            raise ValueError("Use two comma-separated values.")
-        return tuple(parts)
-
-    def fill_key_value_table(self, table, data):
-        table.setRowCount(0)
-        for key, value in data.items():
-            row = table.rowCount()
-            table.insertRow(row)
-            key_item = QTableWidgetItem(str(key))
-            key_item.setFlags(key_item.flags() & ~Qt.ItemIsEditable)
-            table.setItem(row, 0, key_item)
-            table.setItem(row, 1, QTableWidgetItem("" if value is None else str(value)))
-
-    def table_to_params(self, table):
-        params = {}
-        for row in range(table.rowCount()):
-            key = table.item(row, 0).text().strip()
-            value_text = table.item(row, 1).text().strip()
-            if value_text == "":
-                params[key] = None
-            elif value_text.lower() in {"true", "false"}:
-                params[key] = value_text.lower() == "true"
-            else:
-                params[key] = float(value_text)
-        return params
+        return parse_pair(text)
 
     def add_mesh_row(self, lithology="Sandstone", start=0.0, end=100.0, rop=10.0):
         row = self.mesh_table.rowCount()
@@ -600,7 +431,9 @@ class MinimizationView(QWidget):
         self.casing_table.setItem(row, 0, QTableWidgetItem(str(_round(depth))))
         self.casing_table.setItem(row, 1, QTableWidgetItem(str(name)))
         self.casing_table.setItem(row, 2, QTableWidgetItem(str(_round(fixed_time))))
-        self.casing_table.setItem(row, 3, QTableWidgetItem(str(bool(include_trip))))
+        trip_box = QCheckBox()
+        trip_box.setChecked(bool(include_trip))
+        self.casing_table.setCellWidget(row, 3, trip_box)
 
     def remove_selected_rows(self, table):
         rows = sorted({index.row() for index in table.selectedIndexes()}, reverse=True)
@@ -608,23 +441,27 @@ class MinimizationView(QWidget):
             table.removeRow(row)
 
     def build_data_from_inputs(self):
-        p0 = self.parse_pair(self.p0_input.text())
-        p3 = self.parse_pair(self.p3_input.text())
-        time_params = self.table_to_params(self.time_params_table)
-        operational_parameters = self.table_to_params(self.operation_params_table)
+        p0 = Point2D.from_text(self.p0_input.text()).as_tuple()
+        p3 = Point2D.from_text(self.p3_input.text()).as_tuple()
+        time_params = self.time_form.to_dict()
+        operational_parameters = self.operation_form.to_dict()
 
         casing_events = []
         for row in range(self.casing_table.rowCount()):
+            trip_widget = self.casing_table.cellWidget(row, 3)
+            include_trip = trip_widget.isChecked() if trip_widget is not None else False
             casing_events.append(
                 {
                     "depth_m": float(self.casing_table.item(row, 0).text()),
                     "name": self.casing_table.item(row, 1).text(),
                     "fixed_time_h": float(self.casing_table.item(row, 2).text()),
-                    "include_trip": self.casing_table.item(row, 3).text().strip().lower() in {"true", "1", "yes", "sim"},
+                    "include_trip": include_trip,
                 }
             )
         operational_parameters["casing_events"] = casing_events
-        operational_parameters["lithology_wear_factors"] = self.table_to_params(self.wear_table)
+        operational_parameters["lithology_wear_factors"] = {
+            name: float(spin.value()) for name, spin in self.wear_spins.items()
+        }
 
         data = DataSet(
             p0,

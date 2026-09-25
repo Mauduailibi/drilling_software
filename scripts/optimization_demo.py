@@ -1,11 +1,24 @@
+"""Demo de pesquisa dos quatro objetivos de otimização Tipo 1.
+
+Isto não é um módulo pytest. Execute após instalar o pacote::
+
+    python scripts/optimization_demo.py
+"""
+
+from __future__ import annotations
+
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-import features.minimization.Auxiliaries as ax
-from features.minimization.Data_base import DataSet, mesh
-from features.minimization.Minimal import (
+import drilling.features.minimization.auxiliaries as ax
+from drilling.features.minimization.defaults import build_default_data, build_default_mesh
+from drilling.features.minimization.minimal import (
     DEFAULT_STYLE,
     drilling_informations_table,
     drilling_time_information_table,
@@ -17,7 +30,7 @@ from features.minimization.Minimal import (
     plot_metrics_vs_l1_for_best_r,
     plot_metrics_vs_radius_for_best_l1,
 )
-from features.minimization.Operational import (
+from drilling.features.minimization.operational import (
     minimal_total_time,
     operational_time_table,
     total_time_for_best_existing_trajectories_table,
@@ -25,75 +38,8 @@ from features.minimization.Operational import (
 )
 
 
-Data = DataSet(
-    P0=(0, 0),
-    P3=(1000, 3000),
-    ro_fluid=1737.5,
-    ro_command=8000,
-    ro_drillpipe=8000,
-    ro_heavypipe=8000,
-    diameters_command=(0.2032, 0.1143),
-    diameters_drillpipe=(0.127, 0.1086104),
-    diameters_heavypipe=(0.1524, 0.1143),
-    µ=0.23,
-    z=(5000 * 8) * 4.44822,
-    lp=36,
-    max=2300,
-    radius=(100, 600),
-    drilling_time_parameters={
-        "trajectory_step": 1.0,
-        "reference_dls_deg_per_30m": 3.0,
-        "surface_wob": 1.60e5,
-        "optimal_wob": 1.80e5,
-        "torque_limit": 1.20e4,
-        "mesh_plot_alpha": 0.45,
-    },
-)
-
-Mesh = mesh(
-    sandstone=[[0, 100], [400, 500], [900, 1600], [2200, 3000]],
-    dolomite=[[100, 200], [1600, 2000]],
-    evaporite=[[200, 300], [2000, 2200]],
-    limestone=[[300, 400], [500, 900]],
-    rop_values={
-        "Sandstone": 18.0,
-        "Limestone": 11.0,
-        "Dolomite": 9.5,
-        "Evaporite": 24.0,
-    },
-)
-
-
-OPERATIONAL_PARAMETERS = {
-    "trip_fixed_time_h": 1.0,
-    "trip_speed_drillpipe_mph": 500.0,
-    "trip_speed_heavypipe_mph": 250.0,
-    "trip_speed_command_mph": 150.0,
-    "bit_run_length_limit_m": 900.0,
-    "bit_run_time_limit_h": None,
-    "routine_stop_every_m": 500.0,
-    "routine_stop_time_h": 0.5,
-    "fatigue_dls_threshold_deg_per_30m": 3.0,
-    "fatigue_dls_multiplier": 0.30,
-    "fatigue_torque_ratio_threshold": 0.75,
-    "fatigue_torque_multiplier": 0.35,
-    "bit_trip_on_lithology_change": True,
-    "operation_merge_distance_m": 10.0,
-    "casing_connection_length_m": 9.0,
-    "casing_connection_time_h": 0.10,
-    "casing_trip_speed_mph": 300.0,
-    "casing_logging_time_h": 5.0,
-    "cement_pumping_time_h": 2.5,
-    "cement_curing_time_h": 12.0,
-    "casing_events": [
-        {
-            "depth_m": 2000.0,
-            "name": "Casing shoe / cementing",
-            "fixed_time_h": 10.0,
-            "include_trip": True,
-        }
-    ],
-}
+Data, OPERATIONAL_PARAMETERS = build_default_data()
+Mesh = build_default_mesh()
 
 SECTION_COLORS = {
     "L1": "#0b3c5d",
@@ -253,56 +199,62 @@ def plot_single_trajectory_with_geological_mesh(
     return None
 
 
-force_l1, force_r = minimal_tension(Data)
-print(f"Minimal axial-force configuration: l1 = {force_l1:.1f} m, R = {force_r:.1f} m")
+def main() -> None:
+    """Executa a demo dos quatro objetivos e mostra os gráficos de pesquisa."""
+    force_l1, force_r = minimal_tension(Data)
+    print(f"Minimal axial-force configuration: l1 = {force_l1:.1f} m, R = {force_r:.1f} m")
 
-torque_l1, torque_r = minimal_torque(Data)
-print(f"Minimal torque configuration: l1 = {torque_l1:.1f} m, R = {torque_r:.1f} m")
+    torque_l1, torque_r = minimal_torque(Data)
+    print(f"Minimal torque configuration: l1 = {torque_l1:.1f} m, R = {torque_r:.1f} m")
 
-time_l1, time_r = minimal_drilling_time(Data, Mesh)
-print(f"Minimal drilling-time configuration: l1 = {time_l1:.1f} m, R = {time_r:.1f} m")
+    time_l1, time_r = minimal_drilling_time(Data, Mesh)
+    print(f"Minimal drilling-time configuration: l1 = {time_l1:.1f} m, R = {time_r:.1f} m")
 
-total_l1, total_r = minimal_total_time(Data, Mesh, operational_parameters=OPERATIONAL_PARAMETERS)
-print(f"Minimal total-time configuration: l1 = {total_l1:.1f} m, R = {total_r:.1f} m")
+    total_l1, total_r = minimal_total_time(Data, Mesh, operational_parameters=OPERATIONAL_PARAMETERS)
+    print(f"Minimal total-time configuration: l1 = {total_l1:.1f} m, R = {total_r:.1f} m")
 
-optimization_summary_table(Data, Mesh)
-drilling_informations_table(Data)
-drilling_time_information_table(Data, Mesh)
-total_time_information_table(Data, Mesh, operational_parameters=OPERATIONAL_PARAMETERS)
-total_time_for_best_existing_trajectories_table(Data, Mesh, operational_parameters=OPERATIONAL_PARAMETERS)
+    optimization_summary_table(Data, Mesh)
+    drilling_informations_table(Data)
+    drilling_time_information_table(Data, Mesh)
+    total_time_information_table(Data, Mesh, operational_parameters=OPERATIONAL_PARAMETERS)
+    total_time_for_best_existing_trajectories_table(Data, Mesh, operational_parameters=OPERATIONAL_PARAMETERS)
 
-print("\n--- Operational-time breakdown for the minimal total-time trajectory ---")
-operational_time_table(Data, Mesh, total_l1, total_r, operational_parameters=OPERATIONAL_PARAMETERS)
+    print("\n--- Operational-time breakdown for the minimal total-time trajectory ---")
+    operational_time_table(Data, Mesh, total_l1, total_r, operational_parameters=OPERATIONAL_PARAMETERS)
 
-plot_single_trajectory_with_geological_mesh(
-    Data,
-    Mesh,
-    force_l1,
-    force_r,
-    title="Type-1 trajectory for the minimal axial force",
-)
-plot_single_trajectory_with_geological_mesh(
-    Data,
-    Mesh,
-    torque_l1,
-    torque_r,
-    title="Type-1 trajectory for the minimal torque",
-)
-plot_single_trajectory_with_geological_mesh(
-    Data,
-    Mesh,
-    time_l1,
-    time_r,
-    title="Type-1 trajectory for the minimal drilling time",
-)
-plot_single_trajectory_with_geological_mesh(
-    Data,
-    Mesh,
-    total_l1,
-    total_r,
-    title="Type-1 trajectory for the minimal total time",
-)
+    plot_single_trajectory_with_geological_mesh(
+        Data,
+        Mesh,
+        force_l1,
+        force_r,
+        title="Type-1 trajectory for the minimal axial force",
+    )
+    plot_single_trajectory_with_geological_mesh(
+        Data,
+        Mesh,
+        torque_l1,
+        torque_r,
+        title="Type-1 trajectory for the minimal torque",
+    )
+    plot_single_trajectory_with_geological_mesh(
+        Data,
+        Mesh,
+        time_l1,
+        time_r,
+        title="Type-1 trajectory for the minimal drilling time",
+    )
+    plot_single_trajectory_with_geological_mesh(
+        Data,
+        Mesh,
+        total_l1,
+        total_r,
+        title="Type-1 trajectory for the minimal total time",
+    )
 
-plot_metrics_vs_radius_for_best_l1(Data, Mesh)
-plot_metrics_vs_l1_for_best_r(Data, Mesh)
-plot_best_metric_per_l1_using_best_r(Data, Mesh)
+    plot_metrics_vs_radius_for_best_l1(Data, Mesh)
+    plot_metrics_vs_l1_for_best_r(Data, Mesh)
+    plot_best_metric_per_l1_using_best_r(Data, Mesh)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,23 +1,85 @@
+"""Núcleos geométricos da correção de trajetória 3D.
+
+Este módulo é um núcleo matemático. Não altere fórmulas, tolerâncias do
+solver ou limites de restrição como parte de empacotamento ou documentação.
+Os pontos de entrada públicos são ``solve_case1``, ``solve_case2`` e
+``solve_case3``.
+"""
+
 import numpy as np
 from scipy.optimize import fsolve
 
 
 def _normalize_angle(a):
+    """Leva um ângulo em radianos para o intervalo (-π, π].
+
+    Parameters
+    ----------
+    a : float
+        Ângulo em radianos.
+
+    Returns
+    -------
+    float
+        Ângulo equivalente em (-π, π].
+    """
     return (a + np.pi) % (2 * np.pi) - np.pi
 
 
 def normalize(v):
+    """Devolve um vetor unitário, ou o vetor original quando a norma é ~0.
+
+    Parameters
+    ----------
+    v : array_like
+        Vetor 3D.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``v / ||v||``, salvo se ``||v||`` for menor que ``1e-12``.
+    """
     n = np.linalg.norm(v)
     return v if n < 1e-12 else v / n
 
 
 def dls_to_radius(dls_val, ref_length=30.0):
+    """Converte a severidade de dogleg (graus por comprimento de referência) em raio.
+
+    Parameters
+    ----------
+    dls_val : float
+        Severidade de dogleg em graus por ``ref_length``.
+    ref_length : float, optional
+        Intervalo de perfilagem em metros. O padrão é 30 m.
+
+    Returns
+    -------
+    float
+        Raio de curvatura em metros, ou ``inf`` quando ``dls_val <= 0``.
+    """
     if dls_val <= 0:
         return np.inf
     return ref_length / np.radians(dls_val)
 
 
 def rodrigues_rotation(v, k, theta):
+    """Rotaciona o vetor ``v`` em torno do eixo unitário ``k`` pelo ângulo ``theta``.
+
+    Parameters
+    ----------
+    v : array_like
+        Vetor a rotacionar.
+    k : array_like
+        Eixo de rotação (normalizado internamente).
+    theta : float
+        Ângulo de rotação em radianos.
+
+    Returns
+    -------
+    numpy.ndarray
+        Vetor rotacionado.
+    """
     v = np.asarray(v)
     k = normalize(np.asarray(k))
     return (
@@ -28,6 +90,24 @@ def rodrigues_rotation(v, k, theta):
 
 
 def generate_initial_guesses(p1, pt, v, n_random=3, scale=1.0):
+    """Monta pontos iniciais para o solver não linear do centro do arco no Caso 1.
+
+    Parameters
+    ----------
+    p1, pt : array_like
+        Pontos inicial e alvo.
+    v : array_like
+        Direção em ``p1``.
+    n_random : int, optional
+        Número de amostras gaussianas extras.
+    scale : float, optional
+        Comprimento característico usado para deslocar os palpites.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        Centros candidatos. A semente do gerador aleatório fica fixa em 42 de propósito.
+    """
     mid = 0.5 * (p1 + pt)
     guesses = [mid]
     vn = normalize(v)
@@ -41,6 +121,25 @@ def generate_initial_guesses(p1, pt, v, n_random=3, scale=1.0):
 
 
 def find_arc_center_radius(p1, pt, v):
+    """Resolve o centro único do arco que passa por ``p1`` e ``pt`` com tangente ``v``.
+
+    Parameters
+    ----------
+    p1, pt, v : array_like
+        Ponto inicial, alvo e direção inicial.
+
+    Returns
+    -------
+    centre : numpy.ndarray
+        Centro do arco.
+    radius : float
+        Distância ``||p1 - centre||``.
+
+    Raises
+    ------
+    RuntimeError
+        Se ``scipy.optimize.fsolve`` nunca reportar sucesso.
+    """
     def F(c):
         r1 = p1 - c
         r2 = pt - c
@@ -59,6 +158,24 @@ def find_arc_center_radius(p1, pt, v):
 
 
 def generate_arc_points(p1, pt, center, radius, n=300):
+    """Amostra o arco circular de ``p1`` até ``pt`` em torno de ``center``.
+
+    Parameters
+    ----------
+    p1, pt, center : array_like
+        Início, fim e centro do arco.
+    radius : float
+        Raio do arco em metros.
+    n : int, optional
+        Número de amostras.
+
+    Returns
+    -------
+    arc : numpy.ndarray
+        Polilinha de forma ``(n, 3)``.
+    ang : float
+        Ângulo de varredura com sinal, em radianos.
+    """
     u = normalize(p1 - center)
     ptv = pt - center
     w = ptv - np.dot(ptv, u) * u
@@ -77,6 +194,24 @@ def generate_arc_points(p1, pt, center, radius, n=300):
 
 
 def validate_trajectory_case1(p1, pt, v, arc, turn_angle, max_ang_deg=70):
+    """Avalia as cinco restrições operacionais do Caso 1.
+
+    Parameters
+    ----------
+    p1, pt, v : array_like
+        Início, alvo e direção.
+    arc : numpy.ndarray
+        Pontos amostrados do arco.
+    turn_angle : float
+        Ângulo de varredura em radianos.
+    max_ang_deg : float, optional
+        Giro total máximo admissível.
+
+    Returns
+    -------
+    list of tuple
+        Cada item é ``(name, ok, value_text, limit_text)``.
+    """
     status = []
     status.append(("Deeper Target", pt[2] <= p1[2], f"{pt[2]:.0f}", f"≤ {p1[2]:.0f}"))
     dot = np.dot(v, pt - p1)
@@ -96,6 +231,20 @@ def validate_trajectory_case1(p1, pt, v, arc, turn_angle, max_ang_deg=70):
 
 
 def solve_case1(Pin, Pbd, p1, pt, v):
+    """Constrói um arco circular de raio livre de ``p1`` até ``pt``.
+
+    Parameters
+    ----------
+    Pin, Pbd, p1, pt, v : array_like
+        Origem do projeto, ponto de build-and-drop, posição atual da broca,
+        alvo e direção em ``p1``. ``Pin`` e ``Pbd`` são guardados para o
+        gráfico e não entram no solver do arco.
+
+    Returns
+    -------
+    dict
+        Geometria, arco amostrado, ângulo de giro e tabela de restrições do Caso 1.
+    """
     p1 = np.asarray(p1, float)
     pt = np.asarray(pt, float)
     v = normalize(np.asarray(v, float))
@@ -123,6 +272,20 @@ def solve_case1(Pin, Pbd, p1, pt, v):
 
 
 def compute_case2_trajectory(p1, pt, v_init, dls_deg=3.0):
+    """Constrói um arco de DLS constante a partir de ``p1`` mais uma tangente reta até ``pt``.
+
+    Parameters
+    ----------
+    p1, pt, v_init : array_like
+        Início, alvo e direção inicial.
+    dls_deg : float, optional
+        Severidade de dogleg em graus por 30 m. Padrão 3,0.
+
+    Returns
+    -------
+    dict
+        Polilinha do arco, reta tangente, centro, raio e ângulo de giro.
+    """
     radius = dls_to_radius(dls_deg)
     p1 = np.asarray(p1, float)
     pt = np.asarray(pt, float)
@@ -181,6 +344,22 @@ def compute_case2_trajectory(p1, pt, v_init, dls_deg=3.0):
 
 
 def validate_trajectory_case2(p1, pt, v_init, result, max_ang_deg=70):
+    """Avalia as cinco restrições operacionais do Caso 2.
+
+    Parameters
+    ----------
+    p1, pt, v_init : array_like
+        Início, alvo e direção.
+    result : dict
+        Saída de ``compute_case2_trajectory``.
+    max_ang_deg : float, optional
+        Giro total máximo admissível.
+
+    Returns
+    -------
+    list of tuple
+        Cada item é ``(name, ok, value_text, limit_text)``.
+    """
     status = []
     status.append(("Deeper Target", pt[2] <= p1[2], f"Zt: {pt[2]:.0f}", f"≤ {p1[2]:.0f}"))
     dot = np.dot(v_init, pt - p1)
@@ -200,6 +379,18 @@ def validate_trajectory_case2(p1, pt, v_init, result, max_ang_deg=70):
 
 
 def solve_case2(Pin, Pbd, p1, pt, v):
+    """Solver público do Caso 2: arco de DLS constante mais tangente, depois validação.
+
+    Parameters
+    ----------
+    Pin, Pbd, p1, pt, v : array_like
+        Os mesmos cinco vetores de ``solve_case1``.
+
+    Returns
+    -------
+    dict
+        Geometria, comprimento total e tabela de restrições do Caso 2.
+    """
     Pin = np.asarray(Pin, float)
     Pbd = np.asarray(Pbd, float)
     p1 = np.asarray(p1, float)
@@ -233,12 +424,36 @@ def solve_case2(Pin, Pbd, p1, pt, v):
     }
 
 def project_direction(Pin, Pbd):
+    """Direção unitária do poço planejado de ``Pin`` até ``Pbd``.
+
+    Parameters
+    ----------
+    Pin, Pbd : array_like
+        Origem do projeto e ponto de build-and-drop.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``Pbd - Pin`` normalizado.
+    """
     Pin = np.asarray(Pin, float)
     Pbd = np.asarray(Pbd, float)
     return normalize(Pbd - Pin)
 
 
 def angle_between(u, v):
+    """Ângulo sem sinal, em radianos, entre dois vetores.
+
+    Parameters
+    ----------
+    u, v : array_like
+        Direções de entrada.
+
+    Returns
+    -------
+    float
+        ``arccos`` do cosseno limitado ao intervalo [-1, 1].
+    """
     u = normalize(np.asarray(u, float))
     v = normalize(np.asarray(v, float))
     c = np.clip(np.dot(u, v), -1.0, 1.0)
@@ -246,6 +461,18 @@ def angle_between(u, v):
 
 
 def signed_angle_on_plane(u, v, plane_normal):
+    """Ângulo com sinal de ``u`` até ``v`` no plano de ``plane_normal``.
+
+    Parameters
+    ----------
+    u, v, plane_normal : array_like
+        Direções e normal do plano.
+
+    Returns
+    -------
+    float
+        Ângulo em radianos obtido por ``atan2``.
+    """
     u = normalize(np.asarray(u, float))
     v = normalize(np.asarray(v, float))
     plane_normal = normalize(np.asarray(plane_normal, float))
@@ -256,6 +483,24 @@ def signed_angle_on_plane(u, v, plane_normal):
 
 
 def build_alignment_arc(p_start, v_start, v_end, radius, n=120):
+    """Arco circular que rotaciona a tangente de ``v_start`` até ``v_end``.
+
+    Parameters
+    ----------
+    p_start : array_like
+        Ponto inicial do arco.
+    v_start, v_end : array_like
+        Tangentes inicial e final.
+    radius : float
+        Raio do arco. ``inf`` produz um resultado degenerado de um único ponto.
+    n : int, optional
+        Número de amostras.
+
+    Returns
+    -------
+    dict
+        Amostras do arco, centro, ângulo de giro, comprimento e pose final.
+    """
     p_start = np.asarray(p_start, float)
     v_start = normalize(np.asarray(v_start, float))
     v_end = normalize(np.asarray(v_end, float))
@@ -324,6 +569,20 @@ def build_alignment_arc(p_start, v_start, v_end, radius, n=120):
 
 
 def compute_case2_from_start(p_start, pt, v_start, dls_deg=3.0):
+    """Geometria do Caso 2 a partir de um ponto arbitrário (usada pelo Caso 3).
+
+    Parameters
+    ----------
+    p_start, pt, v_start : array_like
+        Ponto inicial, alvo e tangente.
+    dls_deg : float, optional
+        Severidade de dogleg em graus por 30 m.
+
+    Returns
+    -------
+    dict
+        Os mesmos campos de ``compute_case2_trajectory``, mais comprimentos de trecho.
+    """
     p_start = np.asarray(p_start, float)
     pt = np.asarray(pt, float)
     v_start = normalize(np.asarray(v_start, float))
@@ -393,6 +652,28 @@ def compute_case2_from_start(p_start, pt, v_start, dls_deg=3.0):
     }
 
 def compute_initial_alignment(Pin, Pbd, p1, v, dls_deg=3.0, alpha_max_deg=None):
+    """Alinha a direção atual ``v`` sobre o poço planejado ``Pin→Pbd``.
+
+    Parameters
+    ----------
+    Pin, Pbd, p1, v : array_like
+        Pontos do projeto, posição atual da broca e direção atual.
+    dls_deg : float, optional
+        Severidade de dogleg do arco de alinhamento.
+    alpha_max_deg : float or None, optional
+        Se definido, levanta erro quando o ângulo de alinhamento (sem sinal)
+        ultrapassa esse limite.
+
+    Returns
+    -------
+    dict
+        Geometria do arco de alinhamento e a direção do projeto.
+
+    Raises
+    ------
+    ValueError
+        Quando ``alpha_max_deg`` é ultrapassado.
+    """
     Pin = np.asarray(Pin, float)
     Pbd = np.asarray(Pbd, float)
     p1 = np.asarray(p1, float)
@@ -431,11 +712,39 @@ def compute_initial_alignment(Pin, Pbd, p1, v, dls_deg=3.0, alpha_max_deg=None):
     }
 
 def point_along_direction(p0, direction, distance):
+    """Ponto a uma distância medida de ``p0`` na direção ``direction``.
+
+    Parameters
+    ----------
+    p0, direction : array_like
+        Origem e direção.
+    distance : float
+        Distância em metros.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``p0 + distance * unit(direction)``.
+    """
     p0 = np.asarray(p0, float)
     direction = normalize(np.asarray(direction, float))
     return p0 + distance * direction
 
 def distance_to_reach_z(p0, direction, z_target):
+    """Distância à frente ao longo de ``direction`` até atingir a cota ``z_target``.
+
+    Parameters
+    ----------
+    p0, direction : array_like
+        Origem e direção.
+    z_target : float
+        Coordenada Z alvo.
+
+    Returns
+    -------
+    float or None
+        Distância positiva, ou ``None`` se o raio for horizontal ou apontar para o lado oposto.
+    """
     p0 = np.asarray(p0, float)
     direction = normalize(np.asarray(direction, float))
 
@@ -450,6 +759,18 @@ def distance_to_reach_z(p0, direction, z_target):
     return float(s)
 
 def compute_preferred_start_distance(p_align, u_proj, Pbd):
+    """Comprimento de hold que atinge o Z de ``Pbd`` na direção do projeto.
+
+    Parameters
+    ----------
+    p_align, u_proj, Pbd : array_like
+        Fim do arco de alinhamento, tangente do projeto e ponto de build-and-drop.
+
+    Returns
+    -------
+    float or None
+        Comprimento de hold preferido, em metros.
+    """
     p_align = np.asarray(p_align, float)
     u_proj = normalize(np.asarray(u_proj, float))
     Pbd = np.asarray(Pbd, float)
@@ -457,6 +778,22 @@ def compute_preferred_start_distance(p_align, u_proj, Pbd):
     return distance_to_reach_z(p_align, u_proj, Pbd[2])
 
 def try_case2_candidate(p_align, u_proj, pt, s, dls_deg=3.0):
+    """Avalia um comprimento de hold ``s`` do Caso 3 antes da curva principal do Caso 2.
+
+    Parameters
+    ----------
+    p_align, u_proj, pt : array_like
+        Fim do alinhamento, direção do hold e alvo.
+    s : float
+        Comprimento de hold em metros.
+    dls_deg : float, optional
+        Severidade de dogleg da curva principal.
+
+    Returns
+    -------
+    dict
+        Ponto inicial, trecho de hold, curva principal e comprimento total.
+    """
     p_align = np.asarray(p_align, float)
     u_proj = normalize(np.asarray(u_proj, float))
     pt = np.asarray(pt, float)
@@ -491,6 +828,29 @@ def search_best_case3_start(
     step=30.0,
     min_s=0.0
 ):
+    """Percorre o comprimento de hold para trás a partir do Z preferido e guarda inícios viáveis.
+
+    Parameters
+    ----------
+    p_align, u_proj, pt, Pbd : array_like
+        Fim do alinhamento, direção do projeto, alvo e ponto de build-and-drop.
+    dls_deg : float, optional
+        Severidade de dogleg da curva principal.
+    step : float, optional
+        Decremento do comprimento de hold, em metros.
+    min_s : float, optional
+        Limite inferior do comprimento de hold.
+
+    Returns
+    -------
+    dict
+        ``s`` preferido, todos os candidatos viáveis e o escolhido.
+
+    Raises
+    ------
+    ValueError
+        Se nenhum candidato for viável.
+    """
     p_align = np.asarray(p_align, float)
     u_proj = normalize(np.asarray(u_proj, float))
     pt = np.asarray(pt, float)
@@ -544,6 +904,24 @@ def compute_case3_trajectory(
     alpha_max_deg=None,
     step=30.0
 ):
+    """Compõe arco de alinhamento, hold e uma curva principal do Caso 2.
+
+    Parameters
+    ----------
+    Pin, Pbd, p1, pt, v : array_like
+        Os mesmos cinco vetores dos demais solvers públicos.
+    dls_deg : float, optional
+        Severidade de dogleg dos dois arcos.
+    alpha_max_deg : float or None, optional
+        Teto do ângulo de alinhamento encaminhado a ``compute_initial_alignment``.
+    step : float, optional
+        Passo da busca do comprimento de hold, em metros.
+
+    Returns
+    -------
+    dict
+        Geometria completa do Caso 3, incluindo o comprimento de hold selecionado.
+    """
     Pin = np.asarray(Pin, float)
     Pbd = np.asarray(Pbd, float)
     p1 = np.asarray(p1, float)
@@ -624,6 +1002,22 @@ def validate_trajectory_case3(
     total_angle_max_deg=90.0,
     max_inclination_deg=60.0
 ):
+    """Avalia as restrições do Caso 3, inclusive os ângulos extras de alinhamento.
+
+    Parameters
+    ----------
+    Pin, Pbd, p1, pt, v : array_like
+        Os mesmos cinco vetores do solver.
+    result : dict
+        Saída de ``compute_case3_trajectory``.
+    alpha1_max_deg, alpha_main_max_deg, total_angle_max_deg, max_inclination_deg : float
+        Limites das restrições, em graus.
+
+    Returns
+    -------
+    list of tuple
+        Cada item é ``(name, ok, value_text, limit_text)``.
+    """
     Pin = np.asarray(Pin, float)
     Pbd = np.asarray(Pbd, float)
     p1 = np.asarray(p1, float)
@@ -695,6 +1089,30 @@ def solve_case3(
     max_inclination_deg=60.0,
     step=30.0
 ):
+    """Solver público do Caso 3: alinha, faz hold e depois a curva principal do Caso 2.
+
+    Parameters
+    ----------
+    Pin, Pbd, p1, pt, v : array_like
+        Os mesmos cinco vetores de ``solve_case1``.
+    dls_deg : float, optional
+        Severidade de dogleg em graus por 30 m.
+    alpha1_max_deg, alpha_main_max_deg, total_angle_max_deg, max_inclination_deg : float
+        Limites encaminhados ao validador. ``alpha1_max_deg`` também é
+        aplicado na construção do alinhamento.
+    step : float, optional
+        Passo da busca do comprimento de hold, em metros.
+
+    Returns
+    -------
+    dict
+        Geometria completa mais a tabela de restrições do Caso 3.
+
+    Raises
+    ------
+    ValueError
+        Se o ângulo inicial de alinhamento ultrapassar ``alpha1_max_deg``.
+    """
     Pin = np.asarray(Pin, float)
     Pbd = np.asarray(Pbd, float)
     p1 = np.asarray(p1, float)

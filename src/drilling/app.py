@@ -1,3 +1,8 @@
+"""Ponto de entrada desktop do Drilling Software.
+
+Configura os plugins de plataforma do Qt conforme o sistema operacional e
+abre ``drilling.gui.MainWindow``.
+"""
 import sys
 import os
 
@@ -13,12 +18,15 @@ os.environ["QT_API"] = "pyside6"
 
 from PySide6.QtWidgets import QApplication
 
-from gui.main_window import MainWindow
+from drilling.gui.main_window import MainWindow
 
 def setup_dark_theme(app: QApplication):
+    """Aplica o estilo Fusion. A customização da paleta fica para uma fase posterior."""
     app.setStyle("Fusion")
 
+
 def main():
+    """Cria o ``QApplication``, exibe a janela principal e inicia o loop de eventos."""
     app = QApplication(sys.argv)
     setup_dark_theme(app)
     

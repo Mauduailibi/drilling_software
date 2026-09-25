@@ -1,10 +1,18 @@
 
+"""Modelos de domínio da otimização Tipo 1: dados mecânicos do poço e malha de litologia.
+
+``DataSet`` guarda geometria, densidades, diâmetros e parâmetros de tempo de
+broca. ``mesh`` guarda intervalos de profundidade sem sobreposição e valores
+de ROP. Nenhuma das classes implementa as fórmulas de tração ou de tempo;
+essas ficam em ``minimal`` e ``auxiliaries``.
+"""
+
 import bisect
 import numpy as np
 
 
 class _MechanicalDataSet:
-    """Container for the geometric and mechanical input data."""
+    """Contêiner dos dados geométricos e mecânicos de entrada."""
     def __init__(
         self,
         P0: tuple[float, float],
@@ -95,7 +103,7 @@ class _MechanicalDataSet:
 
 
 class lithology:
-    """Simple lithology descriptor holding only the ROP value."""
+    """Descritor simples de litologia, com apenas o valor de ROP."""
     def __init__(self, rop: float | None = None) -> None:
         self.rop = rop
     def shale(self, rop: int): self.rop = rop
@@ -197,6 +205,7 @@ class DataSetTimeMixin:
 
 
 class DataSet(_MechanicalDataSet, DataSetTimeMixin):
+    """Dados mecânicos e parâmetros de tempo de broca de uma trajetória Tipo 1."""
     def __init__(self, *args, drilling_time_parameters: dict | None = None, operational_parameters: dict | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._init_drilling_time_parameters(drilling_time_parameters)
@@ -210,6 +219,7 @@ class DataSet(_MechanicalDataSet, DataSetTimeMixin):
 
 
 class mesh(_BaseMesh):
+    """Malha geológica: intervalos de profundidade sem sobreposição e tabela de ROP."""
     def __init__(
         self,
         sandstone: list | None = None,

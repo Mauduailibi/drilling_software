@@ -1,4 +1,9 @@
-import numpy as np
+"""Aba Qt da correção de trajetória 3D.
+
+A view monta um ``WellPathInput`` a partir dos campos XYZ, chama
+``logic.solve_case*`` e entrega o dict a ``plot.plot_case_*``. Não contém
+fórmulas de solver.
+"""
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
                                QLineEdit, QPushButton, QComboBox, QCheckBox,
                                QGroupBox, QMessageBox, QFrame, QTableWidget,
@@ -6,11 +11,16 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
 from PySide6.QtCore import Qt
 from pyvistaqt import QtInteractor
 
+from drilling.core import ConstraintCheck, CorrectionResult, WellPathInput
+from drilling.features.well_path.defaults import DEFAULT_WELL_PATH_INPUT
+
 from .logic import solve_case1, solve_case2, solve_case3
 from .plot import plot_case_1, plot_case_2, plot_case_3
 
 
 class WellPathView(QWidget):
+    """Entradas à esquerda e um canvas PyVista para os Casos 1–3."""
+
     def __init__(self):
         super().__init__()
         self.setup_ui()
@@ -25,11 +35,12 @@ class WellPathView(QWidget):
         input_group = QGroupBox("Input Parameters (X, Y, Z)")
         form_layout = QFormLayout(input_group)
 
-        self.input_Pin = QLineEdit("0.0, 0.0, 0.0")
-        self.input_Pbd = QLineEdit("0.0, 0.0, -2000.0")
-        self.input_p1 = QLineEdit("50.0, 100.0, -1800.0")
-        self.input_pt = QLineEdit("1000.0, 0.0, -3000.0")
-        self.input_v = QLineEdit("0.2, 0.4, -1.0")
+        defaults = DEFAULT_WELL_PATH_INPUT
+        self.input_Pin = QLineEdit(defaults.pin.as_text())
+        self.input_Pbd = QLineEdit(defaults.pbd.as_text())
+        self.input_p1 = QLineEdit(defaults.p1.as_text())
+        self.input_pt = QLineEdit(defaults.pt.as_text())
+        self.input_v = QLineEdit(defaults.v.as_text())
 
         form_layout.addRow("Pin:", self.input_Pin)
         form_layout.addRow("Pbd:", self.input_Pbd)
@@ -123,21 +134,16 @@ class WellPathView(QWidget):
         self.plotter.view_yz()
         self.plotter.update()
 
-    def parse_vector(self, text):
-        try:
-            return np.array([float(val.strip()) for val in text.split(",")])
-        except ValueError:
-            raise ValueError(f"Invalid format: {text}. Use 'x, y, z'.")
-
     def populate_validation_table(self, status_list):
-        self.table_validation.setRowCount(len(status_list))
-        for row, (name, ok, value, limit) in enumerate(status_list):
-            item_name = QTableWidgetItem(str(name))
-            item_status = QTableWidgetItem("OK" if ok else "FAILED")
-            item_value = QTableWidgetItem(str(value))
-            item_limit = QTableWidgetItem(str(limit))
+        checks = [ConstraintCheck.from_item(item) for item in status_list]
+        self.table_validation.setRowCount(len(checks))
+        for row, check in enumerate(checks):
+            item_name = QTableWidgetItem(check.name)
+            item_status = QTableWidgetItem("OK" if check.ok else "FAILED")
+            item_value = QTableWidgetItem(check.value)
+            item_limit = QTableWidgetItem(check.limit)
 
-            if not ok:
+            if not check.ok:
                 item_status.setForeground(Qt.red)
             else:
                 item_status.setForeground(Qt.darkGreen)
@@ -153,6 +159,7 @@ class WellPathView(QWidget):
             self.table_validation.setItem(row, 3, item_limit)
 
     def run_calculation(self):
+        """Interpreta as entradas, executa o caso selecionado e atualiza a cena 3D."""
         try:
             self.plotter.clear()
             self.plotter.add_axes()
@@ -160,36 +167,39 @@ class WellPathView(QWidget):
             self.plotter.update()
             QApplication.processEvents()
 
-            Pin = self.parse_vector(self.input_Pin.text())
-            Pbd = self.parse_vector(self.input_Pbd.text())
-            p1 = self.parse_vector(self.input_p1.text())
-            pt = self.parse_vector(self.input_pt.text())
-            v = self.parse_vector(self.input_v.text())
+            inputs = WellPathInput.from_text(
+                self.input_Pin.text(),
+                self.input_Pbd.text(),
+                self.input_p1.text(),
+                self.input_pt.text(),
+                self.input_v.text(),
+            )
+            kwargs = inputs.solver_kwargs()
 
             show_traj = self.check_traj.isChecked()
             show_coords = self.check_coord.isChecked()
             selected_case = self.combo_case.currentIndex() + 1
 
             if selected_case == 1:
-                result = solve_case1(Pin=Pin, Pbd=Pbd, p1=p1, pt=pt, v=v)
+                raw = solve_case1(**kwargs)
             elif selected_case == 2:
-                result = solve_case2(Pin=Pin, Pbd=Pbd, p1=p1, pt=pt, v=v)
+                raw = solve_case2(**kwargs)
             else:
-                result = solve_case3(Pin=Pin, Pbd=Pbd, p1=p1, pt=pt, v=v)
+                raw = solve_case3(**kwargs)
 
-            self.populate_validation_table(result["status"])
-
-            is_valid = all(s[1] for s in result["status"])
+            result = CorrectionResult.from_solver_dict(raw)
+            self.populate_validation_table(result.status)
 
             self.plotter.remove_actor("loading_msg")
 
-            if is_valid:
+            if result.is_valid:
+                payload = result.as_dict()
                 if selected_case == 1:
-                    plot_case_1(self.plotter, result, show_traj, show_coords)
+                    plot_case_1(self.plotter, payload, show_traj, show_coords)
                 elif selected_case == 2:
-                    plot_case_2(self.plotter, result, show_traj, show_coords)
+                    plot_case_2(self.plotter, payload, show_traj, show_coords)
                 else:
-                    plot_case_3(self.plotter, result, show_traj, show_coords)
+                    plot_case_3(self.plotter, payload, show_traj, show_coords)
                 self.plotter.update()
             else:
                 self.plotter.clear()

@@ -1,9 +1,31 @@
+"""Renderização PyVista dos três casos de correção de trajetória.
+
+Os plotters consomem os dicionários devolvidos por ``logic.solve_case*``.
+Posições de câmera e sobreposições decorativas da trajetória de projeto
+são apenas de apresentação.
+"""
 import numpy as np
 import pyvista as pv
 from .logic import normalize
 
 
 def get_plot_xylim(p1, pt, center, arc_points, margem=100):
+    """Limites dos eixos que recobrem o arco e os três pontos de controle.
+
+    Parameters
+    ----------
+    p1, pt, center : array_like
+        Pontos de controle usados para delimitar X e Y.
+    arc_points : numpy.ndarray
+        Arco amostrado.
+    margem : float, optional
+        Folga em metros.
+
+    Returns
+    -------
+    xlim, ylim : tuple of float
+        Limites inclusivos após arredondamento.
+    """
     pontos_fixos = np.array([p1, pt, center])
     xs_fixos = pontos_fixos[:, 0]
     xs_arco = arc_points[:, 0]
@@ -23,6 +45,17 @@ def get_plot_xylim(p1, pt, center, arc_points, margem=100):
 
 
 def plot_case_1(plotter, result, show_project_trajectory, show_points_coordinates):
+    """Desenha o Caso 1 (arco de raio livre) em um plotter PyVista.
+
+    Parameters
+    ----------
+    plotter : pyvista.Plotter
+        Cena 3D de destino.
+    result : dict
+        Saída de ``solve_case1``.
+    show_project_trajectory, show_points_coordinates : bool
+        Interruptores da GUI para a sobreposição do poço planejado e os rótulos dos pontos.
+    """
     p1 = result["p1"]
     pt = result["pt"]
     Pin = result["Pin"]
@@ -146,6 +179,17 @@ def plot_case_1(plotter, result, show_project_trajectory, show_points_coordinate
 
 
 def plot_case_2(plotter, result, show_project_trajectory, show_points_coordinates):
+    """Desenha o Caso 2 (arco de DLS constante mais tangente) em um plotter PyVista.
+
+    Parameters
+    ----------
+    plotter : pyvista.Plotter
+        Cena 3D de destino.
+    result : dict
+        Saída de ``solve_case2``.
+    show_project_trajectory, show_points_coordinates : bool
+        Interruptores da GUI para a sobreposição do poço planejado e os rótulos dos pontos.
+    """
     Pin = result["Pin"]
     Pbd = result["Pbd"]
     p1 = result["p1"]
@@ -272,6 +316,17 @@ def plot_case_2(plotter, result, show_project_trajectory, show_points_coordinate
     plotter.add_legend(legend_items, bcolor="white", face="rectangle", size=(0.2, 0.2), loc="upper left")
 
 def plot_case_3(plotter, result, show_project_trajectory, show_points_coordinates):
+    """Desenha o Caso 3 (alinhamento, hold, curva principal) em um plotter PyVista.
+
+    Parameters
+    ----------
+    plotter : pyvista.Plotter
+        Cena 3D de destino.
+    result : dict
+        Saída de ``solve_case3``.
+    show_project_trajectory, show_points_coordinates : bool
+        Interruptores da GUI para a sobreposição do poço planejado e os rótulos dos pontos.
+    """
     Pin = result["Pin"]
     Pbd = result["Pbd"]
     p1 = result["p1"]

@@ -1,4 +1,15 @@
 
+"""Geometria, forças e núcleos de fator de ROP da trajetória Tipo 1.
+
+Auxiliares geométricos públicos
+-------------------------------
+``theta``, ``lenght``, ``curve_points``, ``validate_configuration``,
+``up_tension``, ``down_tension``, ``buckling``, ``Nl``, ``trajectory_elements``.
+
+A grafia ``lenght`` faz parte da API pública histórica e não deve ser
+renomeada nesta fase. As fórmulas deste arquivo estão congeladas pelos testes golden.
+"""
+
 import numpy as np
 
 
@@ -6,7 +17,7 @@ EPS = 1.0e-10
 
 
 def signal_change(s) -> tuple:
-    """Return whether the sign changes along the array and the first index."""
+    """Indica se o sinal muda ao longo do array e devolve o primeiro índice."""
     arr = np.asarray(s, dtype=float).flatten()
     if arr.size == 0:
         return ("No", None)
@@ -39,7 +50,25 @@ def _reconstruct_target_residual(Data, l1: float, R: float, angle: float, l3: fl
 
 
 def theta(Data, l1, R) -> float:
-    """Estimated final angle in the curve (radians)."""
+    """Inclinação final estimada da curva de build-up, em radianos.
+
+    Parameters
+    ----------
+    Data : DataSet
+        Geometria do poço (usa ``P3``).
+    l1, R : float
+        Comprimento do trecho vertical e raio de curvatura, em metros.
+
+    Returns
+    -------
+    float
+        Ângulo positivo em ``(0, π/2]``.
+
+    Raises
+    ------
+    ValueError
+        Se a geometria não for um poço Tipo 1 válido.
+    """
     x3, y3 = Data.P3
     radicand_l3 = ((x3 - R) ** 2) + (y3 - l1) ** 2 - (R ** 2)
     if radicand_l3 <= EPS:
@@ -81,7 +110,22 @@ def theta(Data, l1, R) -> float:
 
 
 def lenght(Data, l1, R) -> list:
-    """Returns the lengths l1, l2, and l3 of the three sections."""
+    """Devolve os comprimentos dos três trechos ``(l1, l2, l3)``.
+
+    O nome da função preserva a grafia histórica ``lenght``.
+
+    Parameters
+    ----------
+    Data : DataSet
+        Geometria do poço.
+    l1, R : float
+        Comprimento do trecho vertical e raio de curvatura, em metros.
+
+    Returns
+    -------
+    tuple of float
+        ``l1``, comprimento de arco ``l2 = R * theta`` e comprimento de tangente ``l3``.
+    """
     angle = theta(Data, l1, R)
     l3_sq = ((Data.P3[0] - R) ** 2) + (Data.P3[1] - l1) ** 2 - (R ** 2)
     if l3_sq <= EPS:
@@ -221,6 +265,22 @@ def _vertical_effective_weight(Data, l1: float) -> float:
 
 
 def validate_configuration(Data, l1, R, angle_limit_deg: float | None = None) -> dict:
+    """Aceita um par (L1, R) ou levanta erro se a geometria Tipo 1 for inadmissível.
+
+    Parameters
+    ----------
+    Data : DataSet
+        Geometria do poço e o limite angular padrão.
+    l1, R : float
+        Comprimentos candidatos.
+    angle_limit_deg : float or None, optional
+        Substitui ``Data.angle_limit_deg`` (padrão 52°).
+
+    Returns
+    -------
+    dict
+        ``l1``, ``l2``, ``l3``, ``R``, ``angle``, ``angle_deg``, ``lc``, ``ld``.
+    """
     if l1 <= 0 or R <= 0:
         raise ValueError("l1 and R must be positive.")
 
@@ -254,6 +314,20 @@ def validate_configuration(Data, l1, R, angle_limit_deg: float | None = None) ->
 
 
 def up_tension(Data, l1, R) -> list:
+    """Força axial no topo de L1, no início da curva e em P3 (içamento).
+
+    Parameters
+    ----------
+    Data : DataSet
+        Propriedades mecânicas.
+    l1, R : float
+        Configuração em avaliação.
+
+    Returns
+    -------
+    tuple of float
+        ``(tension_1, tension_2, tension_3)`` em newtons.
+    """
     config = validate_configuration(Data, l1, R)
     lc = config["lc"]
     l1 = config["l1"]
@@ -344,6 +418,20 @@ def up_tension(Data, l1, R) -> list:
 
 
 def down_tension(Data, l1, R) -> list:
+    """Força axial ao descer a coluna, mais o torque de atrito.
+
+    Parameters
+    ----------
+    Data : DataSet
+        Propriedades mecânicas.
+    l1, R : float
+        Configuração em avaliação.
+
+    Returns
+    -------
+    tuple of float
+        ``(tension_1, tension_2, tension_3, torque)`` em N e N·m.
+    """
     config = validate_configuration(Data, l1, R)
     lc = config["lc"]
     l1 = config["l1"]
@@ -584,6 +672,23 @@ def _line_elements(x0: float, y0: float, x1: float, y1: float, n_steps: int, sec
 
 
 def trajectory_elements(Data, l1: float, R: float, ds_target: float | None = None):
+    """Discretiza o poço Tipo 1 em elementos de trecho vertical, curva e tangente.
+
+    Parameters
+    ----------
+    Data : DataSet
+        Geometria e o ``trajectory_step`` padrão.
+    l1, R : float
+        Configuração a discretizar.
+    ds_target : float or None, optional
+        Comprimento do elemento em metros. O padrão é
+        ``Data.drilling_time_parameters['trajectory_step']``.
+
+    Returns
+    -------
+    list of dict
+        Cada elemento tem extremidades, comprimento, inclinação, curvatura e DLS.
+    """
     config = validate_configuration(Data, l1, R)
     l1 = config["l1"]
     l2 = config["l2"]

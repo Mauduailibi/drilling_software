@@ -1,8 +1,13 @@
+"""Gráficos Matplotlib da aba Minimization.
+
+Esses plotters recebem resultados já calculados. Não devem reexecutar a
+malha de otimização.
+"""
 import matplotlib.patches as patches
 import numpy as np
 
-import features.minimization.Auxiliaries as ax
-from features.minimization.Minimal import DEFAULT_STYLE
+import drilling.features.minimization.auxiliaries as ax
+from drilling.features.minimization.minimal import DEFAULT_STYLE
 
 
 OBJECTIVE_STYLES = {

@@ -1,10 +1,21 @@
 
+"""Busca em malha de candidatos Tipo 1 e decomposição do tempo de broca.
+
+``_scan_candidates`` enumera o domínio padrão L1 × R. ``minimal_tension``
+e ``minimal_torque`` escolhem os ótimos mecânicos. ``drilling_time_breakdown``
+transforma um par (L1, R) em uma estimativa de tempo sobre uma malha geológica.
+
+Os auxiliares de ``print`` em CLI deste arquivo são saída de pesquisa legado;
+a GUI usa ``drilling.features.minimization.plot``. Não altere passos de
+varredura nem fórmulas aqui sem atualizar os snapshots golden.
+"""
+
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
 import pandas as pd
 
-import features.minimization.Auxiliaries as ax
+import drilling.features.minimization.auxiliaries as ax
 
 
 DEFAULT_STYLE = {
@@ -151,6 +162,24 @@ def _finish_plot(ax_plot, title: str, xlabel: str, ylabel: str, equal: bool = Fa
 
 
 def drilling_time_breakdown(Data, Mesh, l1: float, R: float, ds_target: float | None = None) -> dict:
+    """Integra o tempo de broca ao longo da trajetória discretizada.
+
+    Parameters
+    ----------
+    Data : DataSet
+        Dados mecânicos e parâmetros de fator de ROP.
+    Mesh : mesh
+        Intervalos de litologia.
+    l1, R : float
+        Configuração em cronometragem.
+    ds_target : float or None, optional
+        Comprimento de elemento encaminhado a ``trajectory_elements``.
+
+    Returns
+    -------
+    dict
+        Linhas por elemento, totais e decomposições por litologia e trecho.
+    """
     config = ax.validate_configuration(Data, l1, R)
     elements = ax.trajectory_elements(Data, l1, R, ds_target=ds_target)
     params = Data.drilling_time_parameters
@@ -370,7 +399,7 @@ def plot_metrics_vs_radius_for_best_l1(
     operational_parameters: dict | None = None,
     mechanical_limits: dict | None = None,
 ) -> None:
-    from features.minimization.Operational import plot_metrics_vs_radius_for_best_l1_4_conditions
+    from drilling.features.minimization.operational import plot_metrics_vs_radius_for_best_l1_4_conditions
 
     plot_metrics_vs_radius_for_best_l1_4_conditions(
         Data,
@@ -386,7 +415,7 @@ def plot_metrics_vs_l1_for_best_r(
     operational_parameters: dict | None = None,
     mechanical_limits: dict | None = None,
 ) -> None:
-    from features.minimization.Operational import plot_metrics_vs_l1_for_best_r_4_conditions
+    from drilling.features.minimization.operational import plot_metrics_vs_l1_for_best_r_4_conditions
 
     plot_metrics_vs_l1_for_best_r_4_conditions(
         Data,
@@ -402,7 +431,7 @@ def plot_best_metric_per_l1_using_best_r(
     operational_parameters: dict | None = None,
     mechanical_limits: dict | None = None,
 ) -> None:
-    from features.minimization.Operational import plot_best_metric_per_l1_using_best_r_4_conditions
+    from drilling.features.minimization.operational import plot_best_metric_per_l1_using_best_r_4_conditions
 
     plot_best_metric_per_l1_using_best_r_4_conditions(
         Data,
