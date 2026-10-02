@@ -6,6 +6,7 @@ from drilling.core import parse_vector3
 from drilling.features.minimization import calculate_minimization
 from drilling.features.minimization.auxiliaries import lenght, theta, validate_configuration
 from drilling.features.minimization.defaults import build_default_data, build_default_mesh
+from drilling.features.minimization.grid import read_grdecl
 from drilling.features.well_path import solve_case1, solve_case2, solve_case3
 from drilling.features.well_path.defaults import DEFAULT_WELL_PATH_INPUT
 
@@ -19,6 +20,7 @@ def test_public_solvers_have_numpy_docstrings() -> None:
         calculate_minimization,
         build_default_data,
         build_default_mesh,
+        read_grdecl,
         theta,
         lenght,
         validate_configuration,

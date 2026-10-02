@@ -3,7 +3,7 @@
 Software desktop (PySide6) com dois módulos independentes:
 
 - **Well Path Correction** (`drilling.features.well_path`) — correção de trajetória 3D (Cases 1, 2 e 3).
-- **Minimization** (`drilling.features.minimization`) — otimização de trajetória Tipo 1 (força, torque, tempo de broca, tempo total) sobre um modelo geológico 3D (`geology.HorizonModel`: horizontes inclinados, falhas e fácies laterais, ou seja, litologias diferentes na mesma profundidade).
+- **Minimization** (`drilling.features.minimization`) — otimização de trajetória Tipo 1 (força, torque, tempo de broca, tempo total) sobre uma malha de reservatório pronta, lida de um arquivo GRDECL.
 
 A matemática dos solvers está congelada pelos testes golden. Qualquer mudança de fórmula, limite ou default da GUI deve falhar em `pytest`.
 
@@ -15,6 +15,35 @@ Tipos compartilhados (`Point3D`, `Point2D`, `WellPathInput`, `ConstraintCheck`) 
 |--------|--------|----------------|
 | Well Path | XYZ, metros | **Z negativo** |
 | Minimization | XYZ, metros (poço no plano vertical P0 → P3) | **Z positivo** para baixo |
+
+## Malha geológica (GRDECL)
+
+O sistema não constrói malhas: ele lê uma malha corner-point pronta no formato GRDECL (Eclipse), posiciona nela a cabeça do poço e o alvo e calcula a trajetória.
+
+Na aba Minimization:
+
+1. **Load GRDECL...** carrega o arquivo (obrigatório para rodar). A tabela lista as litologias encontradas e o número de células ativas de cada uma.
+2. **Wellhead (x, y, z)** e **Target (x, y, z)** usam as coordenadas da malha, com profundidade positiva para baixo (a mesma convenção de `ZCORN`). O poço Tipo 1 fica no plano vertical que passa pelos dois pontos. O alvo precisa cair em uma célula ativa da malha; senão a otimização não começa e a mensagem mostra a extensão da malha.
+3. O ROP base de cada elemento é **Base ROP × coeficiente da litologia**. A linha *Outside grid* vale para o trecho do poço fora da malha (ou em células inativas). A mesma tabela tem o fator de desgaste de broca por litologia.
+4. A aba **3D Grid** mostra as trajetórias ótimas dentro do trecho da malha em volta do poço (da cabeça ao alvo, com margem), com células translúcidas. **Zoom to the grid cells only** enquadra só as células, útil quando o reservatório é fino perto do comprimento do poço. Durante a otimização a aba fica bloqueada, com uma animação de carregamento.
+
+Do arquivo, só são lidos `SPECGRID`/`DIMENS`, `COORD`, `ZCORN`, `ACTNUM` e a litologia; todo o resto é ignorado. A litologia vem de um keyword inteiro `FACIES`/`LITHOLOGY`/`LITHO` ou, na falta dele, das frações `SED1`, `SED2`, ...: a célula recebe o sedimento de maior fração. Coordenadas são usadas como estão no arquivo (`MAPAXES` é ignorado) e a coluna de cada ponto é localizada supondo pilares aproximadamente verticais.
+
+```python
+from drilling.features.minimization import GridGeology, read_grdecl
+
+grid = read_grdecl("tests/data/kvl_quarter_five_spot.grdecl")
+geology = GridGeology(grid, wellhead=(-40, 500, -2975), target=(960, 500, 25),
+                      base_rop=15.0, rop_coefficients={"SED1": 1.5, "SED3": 0.7})
+geology.segment_at(950.0, 2990.0)   # {'lithology': 'SED2', 'rop': 15.0}
+```
+
+Malhas de teste:
+
+- `tests/data/kvl_quarter_five_spot.grdecl`: exportação real do KVL, mas é um modelo mínimo (10 × 10 × 3 células de 100 × 100 × 10 m, só 30 m de espessura). Serve para testar o leitor, não para otimizar um poço de 3 km.
+- `python scripts/make_test_grid.py` gera `outputs/synthetic_basin.grdecl`: 3 × 3 km, 12 camadas até ~3,5 km, mergulho, anticlinal e um canal arenoso. Os valores padrão de Wellhead/Target da GUI caem dentro dela.
+
+A `mesh` de intervalos de profundidade (`build_default_mesh`) continua existindo só como geologia dos testes golden e dos scripts antigos.
 
 ## Ambiente
 
@@ -37,14 +66,12 @@ Atalhos equivalentes: `python -m drilling` e o script `drilling` instalado pelo 
 Os snapshots em `tests/goldens/` registram os números atuais dos defaults. Tolerância: `1e-10`.
 
 ```bash
-# Tudo, inclusive os quatro objetivos no grid L1 × R (~20 s)
+# Tudo, inclusive os quatro objetivos no grid L1 × R (~30 s)
 pytest
 
 # Sem as varreduras completas do grid
 pytest -m "not slow"
 ```
-
-`tests/test_geology.py` valida o modelo geológico 3D: heterogeneidade lateral, regressão das camadas planas contra a implementação antiga, soft-string contra a solução fechada e o filtro de manobras por litologia.
 
 Regenerar snapshots **somente** se a mudança numérica for intencional:
 
@@ -58,18 +85,11 @@ python scripts/capture_goldens.py --slow # inclui os 4 ótimos (alguns minutos)
 Scripts de pesquisa (não são testes) ficam em `scripts/` e usam o mesmo pacote da GUI. É o lugar para testar e visualizar resultados rapidamente, sem abrir a interface. Arquivos gerados vão para `outputs/` (ignorado pelo git).
 
 ```bash
-python scripts/optimization_demo.py      # quatro objetivos + gráficos, geologia 3D de exemplo
+python scripts/optimization_demo.py      # quatro objetivos + gráficos
 python scripts/selected_trajectory.py    # inspeciona um par (L1, R) escolhido
-python scripts/scenario_3d.py            # compara geologia plana, inclinada e com fácies lateral
-
-# Sensibilidade de malha (ΔL1, ΔR, passo do elemento)
-python scripts/sensitivity/post_std.py --run all
-python scripts/sensitivity/post_corrigido_min_l1.py --run all   # idem, restrito a L1 >= min_l1
-python scripts/sensitivity/post2.py                              # compara ΔL1 = 10 m e 1 m (lê outputs/post_outputs)
-python scripts/sensitivity/post2_torque.py
+python scripts/make_test_grid.py         # gera outputs/synthetic_basin.grdecl
+python scripts/grid_demo.py outputs/synthetic_basin.grdecl --coef SED1=1.6   # otimização sobre uma GRDECL + figuras 2D/3D
 ```
-
-Os modelos geológicos de exemplo (`flat`, `dipping`, `facies`) ficam em `scripts/example_meshes.py`.
 
 ## Fluxo de trabalho
 

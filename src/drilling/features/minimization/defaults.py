@@ -21,6 +21,15 @@ from drilling.features.minimization.operational import (
 LITHOLOGIES = ["Shale", "Siltstone", "Sandstone", "Limestone", "Dolomite", "Evaporite"]
 """Nomes de litologia em ordem, usados pelo editor de malha e pelo modelo geológico."""
 
+DEFAULT_WELLHEAD = (1000.0, 1500.0, 0.0)
+"""Cabeça do poço ``(x, y, z)`` na abertura da GUI, nas coordenadas da malha."""
+
+DEFAULT_TARGET = (2000.0, 1500.0, 3000.0)
+"""Alvo ``(x, y, z)`` na abertura da GUI; no plano do poço equivale a ``P3 = (1000, 3000)``."""
+
+DEFAULT_BASE_ROP = 15.0
+"""ROP de referência (m/h); cada litologia da malha o multiplica pelo seu coeficiente."""
+
 DRILLING_TIME_FIELD_SPECS = [
     FieldSpec("trajectory_step", "Trajectory step", "m", step=0.1),
     FieldSpec("min_inclination_factor", "Min inclination factor", step=0.01),
@@ -60,8 +69,6 @@ OPERATIONAL_FIELD_SPECS = [
     FieldSpec("fatigue_torque_ratio_threshold", "Fatigue torque ratio", step=0.01, maximum=2.0),
     FieldSpec("fatigue_torque_multiplier", "Fatigue torque multiplier", step=0.01),
     FieldSpec("bit_trip_on_lithology_change", "Bit trip on lithology change", kind="bool"),
-    FieldSpec("lithology_min_run_m", "Min lithology run for bit trip", "m", step=1.0),
-    FieldSpec("min_spacing_between_bit_trips_m", "Min spacing between bit trips", "m", step=10.0),
     FieldSpec("operation_merge_distance_m", "Operation merge distance", "m", step=1.0),
     FieldSpec("casing_connection_length_m", "Casing connection length", "m", step=0.1),
     FieldSpec("casing_connection_time_h", "Casing connection time", "h", step=0.01, decimals=4),
@@ -114,8 +121,8 @@ def build_default_data():
     }
     operational_parameters = build_default_operational_parameters()
     data = DataSet(
-        (0.0, 0.0, 0.0),
-        (1000.0, 0.0, 3000.0),
+        (0, 0),
+        (1000, 3000),
         1737.5,
         8000,
         8000,
@@ -141,9 +148,8 @@ def build_default_mesh():
 
     Returns
     -------
-    HorizonModel
-        Modelo plano (intervalos de profundidade sem sobreposição) usado pela
-        aba Minimization.
+    mesh
+        Intervalos de profundidade sem sobreposição usados pela aba Minimization.
     """
     return mesh(
         sandstone=[[0, 100], [400, 500], [900, 1600], [2200, 3000]],
