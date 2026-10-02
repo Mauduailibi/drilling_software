@@ -588,87 +588,143 @@ def dogleg_severity_deg_per_30m(curvature: float) -> float:
     return float(np.degrees(curvature * 30.0))
 
 
-def inclination_factor(angle_deg: float, params: dict) -> float:
+# Os fatores abaixo aceitam escalares ou arrays NumPy (um valor por elemento do poço).
+
+
+def inclination_factor(angle_deg, params: dict):
     reduction = float(params["inclination_reduction"])
     exponent = float(params["inclination_exponent"])
     lower = max(0.85, float(params["min_inclination_factor"]))
-    normalized = min(max(angle_deg / 90.0, 0.0), 1.0)
+    normalized = np.minimum(np.maximum(angle_deg / 90.0, 0.0), 1.0)
     factor = 1.0 - reduction * (normalized ** exponent)
-    return float(max(lower, min(1.0, factor)))
+    return np.maximum(lower, np.minimum(1.0, factor))
 
 
-def dls_factor(dls_deg_per_30m: float, params: dict) -> float:
+def dls_factor(dls_deg_per_30m, params: dict):
     reduction = float(params["dls_reduction"])
     exponent = float(params["dls_exponent"])
     lower = max(0.50, float(params["min_dls_factor"]))
     reference = float(params["reference_dls_deg_per_30m"])
-    normalized = min(max(dls_deg_per_30m / reference, 0.0), 1.0)
+    normalized = np.minimum(np.maximum(dls_deg_per_30m / reference, 0.0), 1.0)
     factor = 1.0 - reduction * (normalized ** exponent)
-    return float(max(lower, min(1.0, factor)))
+    return np.maximum(lower, np.minimum(1.0, factor))
 
 
-def wob_transfer_factor(angle_deg: float, dls_deg_per_30m: float, params: dict) -> float:
+def wob_transfer_factor(angle_deg, dls_deg_per_30m, params: dict):
     reference_dls = float(params["reference_dls_deg_per_30m"])
     a = float(params["drag_inclination_coeff"])
     b = float(params["drag_dls_coeff"])
     exponent = float(params["wob_transfer_exponent"])
-    inc_term = np.sin(np.radians(max(angle_deg, 0.0)))
-    dls_term = max(dls_deg_per_30m, 0.0) / reference_dls
+    inc_term = np.sin(np.radians(np.maximum(angle_deg, 0.0)))
+    dls_term = np.maximum(dls_deg_per_30m, 0.0) / reference_dls
     transfer = np.exp(-(a * (inc_term ** exponent) + b * (dls_term ** exponent)))
-    return float(min(1.0, max(0.0, transfer)))
+    return np.minimum(1.0, np.maximum(0.0, transfer))
 
 
-def wob_factor(wob_effective: float, params: dict) -> float:
+def wob_factor(wob_effective, params: dict):
     optimal_wob = float(params["optimal_wob"])
     lower = max(0.90, float(params["min_wob_factor"]))
     exponent = float(params["wob_factor_exponent"])
-    ratio = max(wob_effective / optimal_wob, 0.0)
-    factor = min(1.0, ratio ** exponent)
-    return float(max(lower, factor))
+    ratio = np.maximum(wob_effective / optimal_wob, 0.0)
+    factor = np.minimum(1.0, ratio ** exponent)
+    return np.maximum(lower, factor)
 
 
-def local_contact_force_per_length(Data, angle_deg: float, curvature: float, wob_effective: float) -> float:
-    angle_rad = np.radians(max(angle_deg, 0.0))
+def local_contact_force_per_length(Data, angle_deg, curvature, wob_effective):
+    angle_rad = np.radians(np.maximum(angle_deg, 0.0))
     gravity_contact = abs(Data.buoyed_linear_weight_avg) * np.sin(angle_rad)
-    curvature_contact = abs(wob_effective) * max(curvature, 0.0)
-    return float(gravity_contact + curvature_contact)
+    curvature_contact = np.abs(wob_effective) * np.maximum(curvature, 0.0)
+    return gravity_contact + curvature_contact
 
 
-def torque_factor(cumulative_torque: float, params: dict) -> float:
+def torque_factor(cumulative_torque, params: dict):
     reduction = float(params["torque_reduction"])
     exponent = float(params["torque_exponent"])
     lower = max(0.90, float(params["min_torque_factor"]))
     limit = float(params["torque_limit"])
-    normalized = min(max(cumulative_torque / limit, 0.0), 1.0)
+    normalized = np.minimum(np.maximum(cumulative_torque / limit, 0.0), 1.0)
     factor = 1.0 - reduction * (normalized ** exponent)
-    return float(max(lower, min(1.0, factor)))
+    return np.maximum(lower, np.minimum(1.0, factor))
 
 
-def _line_elements(x0: float, y0: float, x1: float, y1: float, n_steps: int, section: str, curvature: float = 0.0):
-    elements = []
-    xs = np.linspace(x0, x1, n_steps + 1)
-    ys = np.linspace(y0, y1, n_steps + 1)
-    for i in range(n_steps):
-        xa, xb = float(xs[i]), float(xs[i + 1])
-        ya, yb = float(ys[i]), float(ys[i + 1])
-        dx = xb - xa
-        dy = yb - ya
-        ds = float(np.hypot(dx, dy))
-        if ds <= EPS:
-            continue
-        angle = inclination_angle_deg(dx, dy)
-        elements.append(
-            {
-                "section": section,
-                "x0": xa, "y0": ya, "x1": xb, "y1": yb,
-                "x_mid": 0.5 * (xa + xb), "y_mid": 0.5 * (ya + yb),
-                "dx": dx, "dy": dy, "length": ds,
-                "inclination_deg": angle,
-                "curvature": float(curvature),
-                "dls_deg_per_30m": dogleg_severity_deg_per_30m(curvature),
-            }
-        )
-    return elements
+ELEMENT_KEYS = ("x0", "y0", "x1", "y1", "x_mid", "y_mid", "dx", "dy", "length", "inclination_deg", "curvature", "dls_deg_per_30m")
+"""Campos numéricos de cada elemento do poço; ``section`` é o único campo de texto."""
+
+
+def _element_arrays(x, y, section: str, curvature: float, inclination_deg=None) -> dict:
+    """Elementos entre pontos consecutivos de ``x``, ``y``; descarta os de comprimento nulo."""
+    xa, xb = x[:-1], x[1:]
+    ya, yb = y[:-1], y[1:]
+    dx = xb - xa
+    dy = yb - ya
+    ds = np.hypot(dx, dy)
+    if inclination_deg is None:
+        inclination_deg = np.degrees(np.arctan2(np.abs(dx), np.abs(dy) + EPS))
+    keep = ds > EPS
+    n = int(keep.sum())
+    return {
+        "section": [section] * n,
+        "x0": xa[keep], "y0": ya[keep], "x1": xb[keep], "y1": yb[keep],
+        "x_mid": 0.5 * (xa + xb)[keep], "y_mid": 0.5 * (ya + yb)[keep],
+        "dx": dx[keep], "dy": dy[keep], "length": ds[keep],
+        "inclination_deg": np.broadcast_to(inclination_deg, ds.shape)[keep],
+        "curvature": np.full(n, float(curvature)),
+        "dls_deg_per_30m": np.full(n, dogleg_severity_deg_per_30m(curvature)),
+    }
+
+
+def trajectory_element_arrays(Data, l1: float, R: float, ds_target: float | None = None) -> dict:
+    """Discretiza o poço Tipo 1 em elementos, com um array NumPy por campo.
+
+    Parameters
+    ----------
+    Data : DataSet
+        Geometria e o ``trajectory_step`` padrão.
+    l1, R : float
+        Configuração a discretizar.
+    ds_target : float or None, optional
+        Comprimento do elemento em metros. O padrão é
+        ``Data.drilling_time_parameters['trajectory_step']``.
+
+    Returns
+    -------
+    dict
+        ``section`` (lista) e os arrays de ``ELEMENT_KEYS``, na ordem do poço:
+        trecho vertical, curva e tangente.
+    """
+    config = validate_configuration(Data, l1, R)
+    l1 = config["l1"]
+    l2 = config["l2"]
+    l3 = config["l3"]
+    angle = config["angle"]
+
+    if ds_target is None:
+        ds_target = float(Data.drilling_time_parameters["trajectory_step"])
+    if ds_target <= 0:
+        raise ValueError("'ds_target' must be positive.")
+
+    x0, y0 = float(Data.P0[0]), float(Data.P0[1])
+    n1 = max(1, int(np.ceil(l1 / ds_target)))
+    vertical = _element_arrays(np.linspace(x0, x0, n1 + 1), np.linspace(y0, y0 + l1, n1 + 1), "vertical", 0.0)
+
+    n2 = max(20, int(np.ceil(l2 / ds_target)))
+    phi = np.linspace(0.0, angle, n2 + 1)
+    x_arc = Data.P0[0] + R * (1.0 - np.cos(phi))
+    y_arc = Data.P0[1] + l1 + R * np.sin(phi)
+    phi_mid = 0.5 * (phi[:-1] + phi[1:])
+    curve = _element_arrays(x_arc, y_arc, "curve", float(1.0 / R), inclination_deg=np.degrees(phi_mid))
+
+    x2 = float(x_arc[-1])
+    y2 = float(y_arc[-1])
+    x3 = float(Data.P3[0])
+    y3 = float(Data.P3[1])
+    n3 = max(1, int(np.ceil(l3 / ds_target)))
+    tangent = _element_arrays(np.linspace(x2, x3, n3 + 1), np.linspace(y2, y3, n3 + 1), "tangent", 0.0)
+
+    parts = (vertical, curve, tangent)
+    arrays = {key: np.concatenate([part[key] for part in parts]) for key in ELEMENT_KEYS}
+    arrays["section"] = [name for part in parts for name in part["section"]]
+    return arrays
 
 
 def trajectory_elements(Data, l1: float, R: float, ds_target: float | None = None):
@@ -688,52 +744,11 @@ def trajectory_elements(Data, l1: float, R: float, ds_target: float | None = Non
     -------
     list of dict
         Cada elemento tem extremidades, comprimento, inclinação, curvatura e DLS.
+        Mesmo conteúdo de ``trajectory_element_arrays``, um dicionário por elemento.
     """
-    config = validate_configuration(Data, l1, R)
-    l1 = config["l1"]
-    l2 = config["l2"]
-    l3 = config["l3"]
-    angle = config["angle"]
-
-    if ds_target is None:
-        ds_target = float(Data.drilling_time_parameters["trajectory_step"])
-    if ds_target <= 0:
-        raise ValueError("'ds_target' must be positive.")
-
-    elements = []
-    n1 = max(1, int(np.ceil(l1 / ds_target)))
-    elements.extend(_line_elements(Data.P0[0], Data.P0[1], Data.P0[0], Data.P0[1] + l1, n1, "vertical", 0.0))
-
-    n2 = max(20, int(np.ceil(l2 / ds_target)))
-    phi = np.linspace(0.0, angle, n2 + 1)
-    x_arc = Data.P0[0] + R * (1.0 - np.cos(phi))
-    y_arc = Data.P0[1] + l1 + R * np.sin(phi)
-    for i in range(n2):
-        xa, xb = float(x_arc[i]), float(x_arc[i + 1])
-        ya, yb = float(y_arc[i]), float(y_arc[i + 1])
-        dx = xb - xa
-        dy = yb - ya
-        ds = float(np.hypot(dx, dy))
-        if ds <= EPS:
-            continue
-        phi_mid = 0.5 * (phi[i] + phi[i + 1])
-        curvature = float(1.0 / R)
-        elements.append(
-            {
-                "section": "curve",
-                "x0": xa, "y0": ya, "x1": xb, "y1": yb,
-                "x_mid": 0.5 * (xa + xb), "y_mid": 0.5 * (ya + yb),
-                "dx": dx, "dy": dy, "length": ds,
-                "inclination_deg": float(np.degrees(phi_mid)),
-                "curvature": curvature,
-                "dls_deg_per_30m": dogleg_severity_deg_per_30m(curvature),
-            }
-        )
-
-    x2 = float(x_arc[-1])
-    y2 = float(y_arc[-1])
-    x3 = float(Data.P3[0])
-    y3 = float(Data.P3[1])
-    n3 = max(1, int(np.ceil(l3 / ds_target)))
-    elements.extend(_line_elements(x2, y2, x3, y3, n3, "tangent", 0.0))
-    return elements
+    arrays = trajectory_element_arrays(Data, l1, R, ds_target=ds_target)
+    columns = [arrays[key].tolist() for key in ELEMENT_KEYS]
+    return [
+        {"section": section, **dict(zip(ELEMENT_KEYS, values))}
+        for section, *values in zip(arrays["section"], *columns)
+    ]

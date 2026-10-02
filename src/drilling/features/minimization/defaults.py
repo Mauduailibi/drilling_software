@@ -21,6 +21,15 @@ from drilling.features.minimization.operational import (
 LITHOLOGIES = ["Shale", "Siltstone", "Sandstone", "Limestone", "Dolomite", "Evaporite"]
 """Nomes de litologia em ordem, usados pelo editor de malha e pelo modelo geológico."""
 
+DEFAULT_WELLHEAD = (1000.0, 1500.0, 0.0)
+"""Cabeça do poço ``(x, y, z)`` na abertura da GUI, nas coordenadas da malha."""
+
+DEFAULT_TARGET = (2000.0, 1500.0, 3000.0)
+"""Alvo ``(x, y, z)`` na abertura da GUI; no plano do poço equivale a ``P3 = (1000, 3000)``."""
+
+DEFAULT_BASE_ROP = 15.0
+"""ROP de referência (m/h); cada litologia da malha o multiplica pelo seu coeficiente."""
+
 DRILLING_TIME_FIELD_SPECS = [
     FieldSpec("trajectory_step", "Trajectory step", "m", step=0.1),
     FieldSpec("min_inclination_factor", "Min inclination factor", step=0.01),

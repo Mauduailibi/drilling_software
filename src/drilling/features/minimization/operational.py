@@ -325,10 +325,7 @@ def operational_time_breakdown(
     """
     params = get_operational_parameters(Data, operational_parameters)
     base_timing = drilling_time_breakdown(Data, Mesh, l1, R) if drilling_timing is None else drilling_timing
-    elements = ax.trajectory_elements(Data, l1, R, ds_target=Data.drilling_time_parameters["trajectory_step"])
     rows = base_timing["elements"]
-    if len(elements) != len(rows):
-        raise ValueError("The operational module expected the same number of geometric and timing elements.")
 
     torque_reference = float(Data.drilling_time_parameters.get("torque_limit", 1.0))
     events = []
@@ -348,9 +345,9 @@ def operational_time_breakdown(
     merge_distance_m = float(params.get("operation_merge_distance_m", 30.0))
     last_bit_reset_measured_depth_m = None
 
-    for element, row in zip(elements, rows):
+    for row in rows:
         ds = float(row["element_length_m"])
-        depth_end_m = max(float(element["y0"]), float(element["y1"]))
+        depth_end_m = max(float(row["depth_start_m"]), float(row["depth_end_m"]))
         measured_depth_m += ds
         drilled_since_last_bit_trip_m += ds
         drilled_since_routine_m += ds
@@ -566,13 +563,12 @@ def _scan_constrained_drilling_time_candidates(Data, Mesh, mechanical_limits: di
         if not evaluation["is_valid"]:
             continue
         try:
-            timing = drilling_time_breakdown(Data, Mesh, candidate["l1"], candidate["R"])
+            timing = drilling_time_breakdown(Data, Mesh, candidate["l1"], candidate["R"], details=False)
             merged = dict(candidate)
             merged.update(
                 {
                     "drilling_time_h": float(timing["total_time_h"]),
                     "average_rop_mph": float(timing["average_rop_mph"]),
-                    "timing": timing,
                     "mechanical_limits": limits,
                 }
             )
@@ -601,7 +597,7 @@ def constrained_drilling_time_informations(Data, Mesh, mechanical_limits: dict |
 
 def constrained_drilling_time_information_table(Data, Mesh, mechanical_limits: dict | None = None) -> None:
     best = constrained_drilling_time_informations(Data, Mesh, mechanical_limits=mechanical_limits)
-    timing = best["timing"]
+    timing = drilling_time_breakdown(Data, Mesh, best["l1"], best["R"])
     summary = pd.DataFrame(
         {
             "Value": np.round(
@@ -683,7 +679,6 @@ def _scan_total_time_candidates(
                     "drilling_time_h": float(base_timing["total_time_h"]),
                     "operational_time_h": float(operational["total_operational_time_h"]),
                     "total_time_h": float(operational["total_time_h"]),
-                    "operational": operational,
                     "mechanical_limits": limits,
                 }
             )
@@ -742,7 +737,7 @@ def total_time_information_table(
         operational_parameters=operational_parameters,
         mechanical_limits=mechanical_limits,
     )
-    operational = best["operational"]
+    operational = operational_time_breakdown(Data, Mesh, best["l1"], best["R"], operational_parameters=operational_parameters)
     summary = pd.DataFrame(
         {
             "Value": np.round(

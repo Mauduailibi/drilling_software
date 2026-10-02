@@ -161,19 +161,23 @@ def _finish_plot(ax_plot, title: str, xlabel: str, ylabel: str, equal: bool = Fa
     plt.tight_layout()
 
 
-def drilling_time_breakdown(Data, Mesh, l1: float, R: float, ds_target: float | None = None) -> dict:
+def drilling_time_breakdown(Data, Mesh, l1: float, R: float, ds_target: float | None = None, details: bool = True) -> dict:
     """Integra o tempo de broca ao longo da trajetória discretizada.
 
     Parameters
     ----------
     Data : DataSet
         Dados mecânicos e parâmetros de fator de ROP.
-    Mesh : mesh
-        Intervalos de litologia.
+    Mesh : mesh or GridGeology
+        Geologia consultada com ``segment_at(horizontal, depth)``.
     l1, R : float
         Configuração em cronometragem.
     ds_target : float or None, optional
         Comprimento de elemento encaminhado a ``trajectory_elements``.
+    details : bool, optional
+        ``False`` devolve só ``total_time_h``, ``total_length_m`` e
+        ``average_rop_mph``, sem montar as linhas por elemento; é o que as
+        varreduras de candidatos precisam.
 
     Returns
     -------
@@ -181,76 +185,90 @@ def drilling_time_breakdown(Data, Mesh, l1: float, R: float, ds_target: float | 
         Linhas por elemento, totais e decomposições por litologia e trecho.
     """
     config = ax.validate_configuration(Data, l1, R)
-    elements = ax.trajectory_elements(Data, l1, R, ds_target=ds_target)
+    elements = ax.trajectory_element_arrays(Data, l1, R, ds_target=ds_target)
     params = Data.drilling_time_parameters
 
-    rows = []
+    depth_mid = elements["y_mid"]
+    if hasattr(Mesh, "segments_at"):
+        segments = Mesh.segments_at(elements["x_mid"], depth_mid)
+    else:
+        segments = [Mesh.segment_at(horizontal, depth) for horizontal, depth in zip(elements["x_mid"].tolist(), depth_mid.tolist())]
+    rop_base = np.array([segment["rop"] for segment in segments], dtype=float)
+
+    angle_deg = elements["inclination_deg"]
+    dls = elements["dls_deg_per_30m"]
+    curvature = elements["curvature"]
+    ds = elements["length"]
+
+    f_inc_raw = ax.inclination_factor(angle_deg, params)
+    f_dls = ax.dls_factor(dls, params)
+
+    wob_transfer = ax.wob_transfer_factor(angle_deg, dls, params)
+    wob_effective = float(params["surface_wob"]) * wob_transfer
+    f_wob = ax.wob_factor(wob_effective, params)
+
+    contact_force_per_length = ax.local_contact_force_per_length(Data, angle_deg, curvature, wob_effective)
+    torque_increment = Data.µ * contact_force_per_length * ds * float(params["bit_radius"])
+    # cumsum soma na ordem do poço, como o laço elemento a elemento original.
+    cumulative_torque = np.cumsum(torque_increment)
+    f_torque = ax.torque_factor(cumulative_torque, params)
+
+    f_dls_active = f_dls < (1.0 - ax.EPS)
+    f_inc = np.where(f_dls_active, 1.0, f_inc_raw)
+    f_rop_total = f_inc * f_dls * f_wob * f_torque
+
+    rop_effective = rop_base * f_rop_total
+    if np.any(rop_effective <= 0):
+        raise ValueError("The effective ROP became non-positive.")
+    time_h = ds / rop_effective
+
+    if not details:
+        # cumsum soma na mesma ordem do laço abaixo, então os totais são idênticos.
+        total_time_h = float(np.cumsum(time_h)[-1])
+        total_length = float(np.cumsum(ds)[-1])
+        return {
+            "l1": float(config["l1"]), "R": float(config["R"]),
+            "total_length_m": total_length,
+            "total_time_h": total_time_h,
+            "average_rop_mph": float(total_length / total_time_h if total_time_h > 0 else np.nan),
+        }
+
+    columns = {
+        "depth_mid_m": depth_mid,
+        "depth_start_m": elements["y0"],
+        "depth_end_m": elements["y1"],
+        "element_length_m": ds,
+        "inclination_deg": angle_deg,
+        "curvature_1pm": curvature,
+        "dls_deg_per_30m": dls,
+        "rop_base_mph": rop_base,
+        "wob_transfer": wob_transfer,
+        "wob_effective_N": wob_effective,
+        "contact_force_per_length_Npm": contact_force_per_length,
+        "torque_increment_Nm": torque_increment,
+        "cumulative_torque_Nm": cumulative_torque,
+        "f_inclination": f_inc,
+        "f_inclination_raw": f_inc_raw,
+        "f_dls": f_dls,
+        "f_dls_active": f_dls_active,
+        "f_wob": f_wob,
+        "f_torque": f_torque,
+        "f_rop_total": f_rop_total,
+        "rop_effective_mph": rop_effective,
+        "time_h": time_h,
+    }
+    names = list(columns)
+    values = [array.tolist() for array in columns.values()]
+    rows = [
+        {"id": index, "section": section, "lithology": segment["lithology"], **dict(zip(names, row))}
+        for index, (section, segment, *row) in enumerate(zip(elements["section"], segments, *values), start=1)
+    ]
+
     total_time_h = 0.0
     total_length = 0.0
-    cumulative_torque = 0.0
-
-    for index, element in enumerate(elements, start=1):
-        depth_mid = float(element["y_mid"])
-        segment = Mesh.segment_at_depth(depth_mid)
-        rop_base = float(segment["rop"])
-
-        angle_deg = float(element["inclination_deg"])
-        dls = float(element["dls_deg_per_30m"])
-        curvature = float(element["curvature"])
-        ds = float(element["length"])
-
-        f_inc_raw = ax.inclination_factor(angle_deg, params)
-        f_dls = ax.dls_factor(dls, params)
-
-        wob_transfer = ax.wob_transfer_factor(angle_deg, dls, params)
-        wob_effective = float(params["surface_wob"]) * wob_transfer
-        f_wob = ax.wob_factor(wob_effective, params)
-
-        contact_force_per_length = ax.local_contact_force_per_length(Data, angle_deg, curvature, wob_effective)
-        torque_increment = float(Data.µ * contact_force_per_length * ds * float(params["bit_radius"]))
-        cumulative_torque += torque_increment
-        f_torque = ax.torque_factor(cumulative_torque, params)
-
-        section = element["section"]
-        f_dls_active = f_dls < (1.0 - ax.EPS)
-        f_inc = 1.0 if f_dls_active else f_inc_raw
-        f_rop_total = f_inc * f_dls * f_wob * f_torque
-
-        rop_effective = rop_base * f_rop_total
-        if rop_effective <= 0:
-            raise ValueError("The effective ROP became non-positive.")
-
-        time_h = float(ds / rop_effective)
-        total_time_h += time_h
-        total_length += ds
-
-        rows.append(
-            {
-                "id": index,
-                "section": section,
-                "depth_mid_m": depth_mid,
-                "element_length_m": ds,
-                "inclination_deg": angle_deg,
-                "curvature_1pm": curvature,
-                "dls_deg_per_30m": dls,
-                "lithology": segment["lithology"],
-                "rop_base_mph": rop_base,
-                "wob_transfer": wob_transfer,
-                "wob_effective_N": wob_effective,
-                "contact_force_per_length_Npm": contact_force_per_length,
-                "torque_increment_Nm": torque_increment,
-                "cumulative_torque_Nm": cumulative_torque,
-                "f_inclination": f_inc,
-                "f_inclination_raw": f_inc_raw,
-                "f_dls": f_dls,
-                "f_dls_active": f_dls_active,
-                "f_wob": f_wob,
-                "f_torque": f_torque,
-                "f_rop_total": f_rop_total,
-                "rop_effective_mph": rop_effective,
-                "time_h": time_h,
-            }
-        )
+    for row in rows:
+        total_time_h += row["time_h"]
+        total_length += row["element_length_m"]
 
     by_lithology = {}
     by_section = {}
@@ -287,9 +305,9 @@ def _scan_candidates_with_time(Data, Mesh):
     candidates = []
     for candidate in base_candidates:
         try:
-            timing = drilling_time_breakdown(Data, Mesh, candidate["l1"], candidate["R"])
+            timing = drilling_time_breakdown(Data, Mesh, candidate["l1"], candidate["R"], details=False)
             merged = dict(candidate)
-            merged.update({"drilling_time_h": float(timing["total_time_h"]), "average_rop_mph": float(timing["average_rop_mph"]), "timing": timing})
+            merged.update({"drilling_time_h": float(timing["total_time_h"]), "average_rop_mph": float(timing["average_rop_mph"])})
             candidates.append(merged)
         except (ValueError, FloatingPointError, ZeroDivisionError):
             continue
@@ -312,7 +330,7 @@ def drilling_time_informations(Data, Mesh) -> dict:
 
 def drilling_time_information_table(Data, Mesh) -> None:
     best = drilling_time_informations(Data, Mesh)
-    timing = best["timing"]
+    timing = drilling_time_breakdown(Data, Mesh, best["l1"], best["R"])
     summary = pd.DataFrame(
         {
             "Value": np.round(

@@ -283,6 +283,29 @@ class mesh(_BaseMesh):
             raise ValueError(f"Depth {d:.3f} m is outside the geological mesh and no default ROP was provided.")
         return {"lithology": "Undefined", "start": d, "end": d, "length": 0.0, "rop": self.default_rop}
 
+    def segment_at(self, horizontal: float, depth: float) -> dict:
+        """Mesma consulta de ``GridGeology``; os intervalos só dependem da profundidade."""
+        return self.segment_at_depth(depth)
+
+    def segments_at(self, horizontal, depth) -> list[dict]:
+        """``segment_at`` para arrays de pontos, com as mesmas regras de borda."""
+        depth = np.asarray(depth, dtype=float)
+        if not self.segments:
+            raise ValueError("The geological mesh is empty.")
+        starts = np.asarray(self._starts)
+        ends = np.array([segment["end"] for segment in self.segments])
+        index = np.searchsorted(starts, depth, side="right") - 1
+        safe = index.clip(0, len(self.segments) - 1)
+        inside = (index >= 0) & (starts[safe] <= depth) & (depth < ends[safe])
+        at_last_end = ~inside & np.isclose(depth, ends[-1])
+        result = [self.segments[i] for i in safe.tolist()]
+        for position in np.nonzero(~inside)[0].tolist():
+            if at_last_end[position]:
+                result[position] = self.segments[-1]
+            else:
+                result[position] = self.segment_at_depth(float(depth[position]))
+        return result
+
     def rop_at_depth(self, depth: float) -> float:
         return float(self.segment_at_depth(depth)["rop"])
 

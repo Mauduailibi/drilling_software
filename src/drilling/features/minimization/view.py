@@ -1,8 +1,9 @@
 """Aba Qt da otimização de trajetória Tipo 1.
 
-Os widgets de entrada montam um ``DataSet`` e uma ``mesh`` geológica; em
-seguida um ``QThread`` chama ``optimize.calculate_minimization``. A
-plotagem permanece em ``plot.py``.
+Os widgets de entrada montam um ``DataSet`` e uma ``GridGeology`` (malha
+GRDECL carregada pelo usuário, com cabeça do poço e alvo em XYZ); em seguida
+um ``QThread`` chama ``optimize.calculate_minimization``. A plotagem
+permanece em ``plot.py``.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGroupBox,
@@ -33,15 +35,17 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
 )
 
-from drilling.core import Point2D, format_pair, parse_pair
-from drilling.features.minimization.data_base import DataSet, mesh
+from drilling.core import Point3D, format_pair, parse_pair
+from drilling.features.minimization.data_base import DataSet
 from drilling.features.minimization.defaults import (
+    DEFAULT_BASE_ROP,
+    DEFAULT_TARGET,
+    DEFAULT_WELLHEAD,
     DRILLING_TIME_FIELD_SPECS,
-    LITHOLOGIES,
     OPERATIONAL_FIELD_SPECS,
     build_default_data,
-    build_default_mesh,
 )
+from drilling.features.minimization.grid import OUTSIDE_GRID, GridGeology, read_grdecl
 from drilling.features.minimization.optimize import calculate_minimization
 from drilling.features.minimization.operational import DEFAULT_MECHANICAL_LIMITS
 from drilling.features.minimization.plot import (
@@ -49,6 +53,7 @@ from drilling.features.minimization.plot import (
     plot_global_curves,
     plot_time_breakdown,
     plot_trajectories,
+    plot_trajectories_3d,
     use_default_matplotlib_style,
 )
 from drilling.gui.param_form import ParamForm
@@ -95,7 +100,7 @@ class MinimizationView(QWidget):
         self.thread = None
         self.worker = None
         self.default_data, self.default_operational = build_default_data()
-        self.default_mesh = build_default_mesh()
+        self.grid = None
         self.setObjectName("MinimizationView")
         self.setup_ui()
 
@@ -122,7 +127,7 @@ class MinimizationView(QWidget):
 
         title = QLabel("Minimization")
         title.setObjectName("Title")
-        subtitle = QLabel("Inputs, geological mesh, operations and mechanical limits")
+        subtitle = QLabel("Inputs, reservoir grid, operations and mechanical limits")
         subtitle.setObjectName("Subtitle")
         layout.addWidget(title)
         layout.addWidget(subtitle)
@@ -143,7 +148,7 @@ class MinimizationView(QWidget):
         layout.addWidget(self.geometry_group())
         layout.addWidget(self.mechanical_group())
         layout.addWidget(self.drilling_time_group())
-        layout.addWidget(self.mesh_group())
+        layout.addWidget(self.geology_group())
         layout.addWidget(self.operations_group())
         layout.addWidget(self.limits_group())
         layout.addStretch()
@@ -182,6 +187,9 @@ class MinimizationView(QWidget):
 
         self.trajectory_canvas = self.make_canvas(figsize=(9, 6))
         self.results_tabs.addTab(self.build_trajectory_tab(), "Trajectories")
+
+        self.trajectory_3d_canvas = self.make_canvas(figsize=(9, 7))
+        self.results_tabs.addTab(self.build_grid_3d_tab(), "3D Grid")
 
         curves_tab = QWidget()
         curves_layout = QVBoxLayout(curves_tab)
@@ -253,12 +261,22 @@ class MinimizationView(QWidget):
         layout.addWidget(self.trajectory_canvas)
         return widget
 
+    def build_grid_3d_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        self.zoom_to_grid = QCheckBox("Zoom to grid section crossed by the well")
+        self.zoom_to_grid.stateChanged.connect(self.refresh_trajectory_plot)
+        layout.addWidget(self.zoom_to_grid)
+        layout.addWidget(self.trajectory_3d_canvas)
+        return widget
+
     def geometry_group(self):
         group = QGroupBox("General drilling geometry")
         form = QFormLayout(group)
         data = self.default_data
-        self.p0_input = QLineEdit(format_pair(data.P0))
-        self.p3_input = QLineEdit(format_pair(data.P3))
+        self.wellhead_input = QLineEdit(Point3D(*DEFAULT_WELLHEAD).as_text())
+        self.target_input = QLineEdit(Point3D(*DEFAULT_TARGET).as_text())
         self.max_l1 = self.spin(data.max, 1, 100000, 1)
         self.min_l1 = self.spin(data.min_l1, 1, 100000, 1)
         self.min_radius = self.spin(data.min_radius, 1, 100000, 1)
@@ -266,8 +284,8 @@ class MinimizationView(QWidget):
         self.l1_step = self.spin(data.l1_step, 0.1, 10000, 1)
         self.radius_step = self.spin(data.radius_step, 0.1, 10000, 1)
         self.angle_limit = self.spin(data.angle_limit_deg, 1, 89, 1)
-        form.addRow("P0 (x, y)", self.p0_input)
-        form.addRow("P3 target (x, y)", self.p3_input)
+        form.addRow("Wellhead (x, y, z)", self.wellhead_input)
+        form.addRow("Target (x, y, z)", self.target_input)
         form.addRow("Max L1 (m)", self.max_l1)
         form.addRow("Min L1 (m)", self.min_l1)
         form.addRow("Min radius (m)", self.min_radius)
@@ -310,27 +328,29 @@ class MinimizationView(QWidget):
         layout.addLayout(self.time_form.layout)
         return group
 
-    def mesh_group(self):
-        group = QGroupBox("Geological mesh and ROP")
+    def geology_group(self):
+        group = QGroupBox("Reservoir grid (GRDECL) and ROP")
         layout = QVBoxLayout(group)
-        buttons = QHBoxLayout()
-        add_button = QPushButton("Add interval")
-        remove_button = QPushButton("Remove selected")
-        add_button.clicked.connect(self.add_mesh_row)
-        remove_button.clicked.connect(lambda: self.remove_selected_rows(self.mesh_table))
-        buttons.addWidget(add_button)
-        buttons.addWidget(remove_button)
-        layout.addLayout(buttons)
+        load_button = QPushButton("Load GRDECL...")
+        load_button.clicked.connect(self.load_grid)
+        layout.addWidget(load_button)
 
-        self.mesh_table = QTableWidget(0, 4)
-        self.mesh_table.setHorizontalHeaderLabels(["Lithology", "Start depth (m)", "End depth (m)", "ROP (m/h)"])
-        self.setup_table(self.mesh_table)
-        self.mesh_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
-        self.mesh_table.setMinimumHeight(340)
-        default_mesh = self.default_mesh
-        for segment in default_mesh.segments:
-            self.add_mesh_row(segment["lithology"], segment["start"], segment["end"], segment["rop"])
-        layout.addWidget(self.mesh_table)
+        self.grid_label = QLabel()
+        self.grid_label.setWordWrap(True)
+        layout.addWidget(self.grid_label)
+
+        form = QFormLayout()
+        self.base_rop = self.spin(DEFAULT_BASE_ROP, 0.01, 10000, 0.5)
+        form.addRow("Base ROP (m/h)", self.base_rop)
+        layout.addLayout(form)
+
+        self.lithology_table = QTableWidget(0, 4)
+        self.lithology_table.setHorizontalHeaderLabels(["Lithology", "Active cells", "ROP coefficient", "Wear factor"])
+        self.setup_table(self.lithology_table)
+        self.lithology_table.setMinimumHeight(180)
+        layout.addWidget(self.lithology_table)
+        layout.addWidget(QLabel("Cell ROP = base ROP × lithology coefficient."))
+        self.set_grid(None)
         return group
 
     def operations_group(self):
@@ -359,31 +379,6 @@ class MinimizationView(QWidget):
         casing_buttons.addWidget(remove_casing)
         layout.addLayout(casing_buttons)
 
-        wear_group = QGroupBox("Lithology wear factors")
-        wear_form = QFormLayout(wear_group)
-        self.wear_spins = {}
-        wear = operational["lithology_wear_factors"]
-        for name in list(LITHOLOGIES) + ["Undefined"]:
-            spin = self.spin(wear.get(name, 1.0), 0, 10, 0.01, decimals=4)
-            self.wear_spins[name] = spin
-            wear_form.addRow(name, spin)
-        layout.addWidget(wear_group)
-        return group
-
-    def limits_group(self):
-        group = QGroupBox("Mechanical limits")
-        form = QFormLayout(group)
-        self.max_top_force = QLineEdit("")
-        self.max_torque = QLineEdit("")
-        self.max_top_force.setPlaceholderText("Optional")
-        self.max_torque.setPlaceholderText("Optional")
-        defaults = DEFAULT_MECHANICAL_LIMITS
-        if defaults["max_top_axial_force_N"] is not None:
-            self.max_top_force.setText(str(defaults["max_top_axial_force_N"]))
-        if defaults["max_torque_Nm"] is not None:
-            self.max_torque.setText(str(defaults["max_torque_Nm"]))
-        form.addRow("Max top axial force (N)", self.max_top_force)
-        form.addRow("Max torque (N*m)", self.max_torque)
         return group
 
     def limits_group(self):
@@ -413,17 +408,42 @@ class MinimizationView(QWidget):
     def parse_pair(self, text):
         return parse_pair(text)
 
-    def add_mesh_row(self, lithology="Sandstone", start=0.0, end=100.0, rop=10.0):
-        row = self.mesh_table.rowCount()
-        self.mesh_table.insertRow(row)
-        combo = QComboBox()
-        combo.addItems(LITHOLOGIES)
-        combo.setCurrentText(str(lithology))
-        combo.setMinimumHeight(24)
-        self.mesh_table.setCellWidget(row, 0, combo)
-        self.mesh_table.setItem(row, 1, QTableWidgetItem(str(_round(start))))
-        self.mesh_table.setItem(row, 2, QTableWidgetItem(str(_round(end))))
-        self.mesh_table.setItem(row, 3, QTableWidgetItem(str(_round(rop))))
+    def load_grid(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Load reservoir grid", "", "GRDECL (*.grdecl *.GRDECL);;All files (*)")
+        if not path:
+            return
+        try:
+            self.set_grid(read_grdecl(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid GRDECL", str(exc))
+
+    def set_grid(self, grid):
+        """Troca a malha carregada e refaz a tabela de litologias (coeficientes voltam a 1)."""
+        self.grid = grid
+        if grid is None:
+            self.grid_label.setText("No grid loaded. Load a GRDECL file to run the optimization.")
+            counts = {}
+        else:
+            self.grid_label.setText(f"{grid.source}\n{grid.nx} × {grid.ny} × {grid.nz} cells; {grid.extent()}")
+            counts = grid.lithology_counts()
+
+        self.lithology_table.setRowCount(0)
+        for name in list(counts) + [OUTSIDE_GRID]:
+            row = self.lithology_table.rowCount()
+            self.lithology_table.insertRow(row)
+            self.lithology_table.setItem(row, 0, QTableWidgetItem(name))
+            self.lithology_table.setItem(row, 1, QTableWidgetItem(str(counts[name]) if name in counts else "-"))
+            self.lithology_table.setCellWidget(row, 2, self.spin(1.0, 0.001, 1000, 0.05, decimals=3))
+            self.lithology_table.setCellWidget(row, 3, self.spin(1.0, 0, 10, 0.01, decimals=4))
+
+    def lithology_inputs(self):
+        """Coeficientes de ROP e fatores de desgaste por litologia, lidos da tabela."""
+        rop_coefficients, wear_factors = {}, {}
+        for row in range(self.lithology_table.rowCount()):
+            name = self.lithology_table.item(row, 0).text()
+            rop_coefficients[name] = float(self.lithology_table.cellWidget(row, 2).value())
+            wear_factors[name] = float(self.lithology_table.cellWidget(row, 3).value())
+        return rop_coefficients, wear_factors
 
     def add_casing_row(self, depth=2000.0, name="Casing shoe / cementing", fixed_time=10.0, include_trip=True):
         row = self.casing_table.rowCount()
@@ -441,8 +461,17 @@ class MinimizationView(QWidget):
             table.removeRow(row)
 
     def build_data_from_inputs(self):
-        p0 = Point2D.from_text(self.p0_input.text()).as_tuple()
-        p3 = Point2D.from_text(self.p3_input.text()).as_tuple()
+        if self.grid is None:
+            raise ValueError("Load a GRDECL grid before running the optimization.")
+        rop_coefficients, wear_factors = self.lithology_inputs()
+        geology = GridGeology(
+            self.grid,
+            Point3D.from_text(self.wellhead_input.text()).as_array(),
+            Point3D.from_text(self.target_input.text()).as_array(),
+            base_rop=self.base_rop.value(),
+            rop_coefficients={name: value for name, value in rop_coefficients.items() if name != OUTSIDE_GRID},
+            outside_rop_coefficient=rop_coefficients[OUTSIDE_GRID],
+        )
         time_params = self.time_form.to_dict()
         operational_parameters = self.operation_form.to_dict()
 
@@ -459,13 +488,11 @@ class MinimizationView(QWidget):
                 }
             )
         operational_parameters["casing_events"] = casing_events
-        operational_parameters["lithology_wear_factors"] = {
-            name: float(spin.value()) for name, spin in self.wear_spins.items()
-        }
+        operational_parameters["lithology_wear_factors"] = wear_factors
 
         data = DataSet(
-            p0,
-            p3,
+            (0, 0),
+            geology.P3,
             self.ro_fluid.value(),
             self.ro_command.value(),
             self.ro_drillpipe.value(),
@@ -485,34 +512,11 @@ class MinimizationView(QWidget):
         data.angle_limit_deg = self.angle_limit.value()
         data.min_l1 = self.min_l1.value()
 
-        intervals = {name: [] for name in LITHOLOGIES}
-        rop_values_by_lithology = {}
-        for row in range(self.mesh_table.rowCount()):
-            lithology = self.mesh_table.cellWidget(row, 0).currentText()
-            start = float(self.mesh_table.item(row, 1).text())
-            end = float(self.mesh_table.item(row, 2).text())
-            rop = float(self.mesh_table.item(row, 3).text())
-            intervals[lithology].append([start, end])
-            rop_values_by_lithology.setdefault(lithology, rop)
-            if not np.isclose(rop_values_by_lithology[lithology], rop):
-                raise ValueError(f"Current mesh model accepts one ROP per lithology. Check {lithology}.")
-
-        rop_values = {name: rop_values_by_lithology[name] for name in LITHOLOGIES if name in rop_values_by_lithology}
-        geological_mesh = mesh(
-            sandstone=intervals["Sandstone"],
-            limestone=intervals["Limestone"],
-            dolomite=intervals["Dolomite"],
-            evaporite=intervals["Evaporite"],
-            shale=intervals["Shale"],
-            siltstone=intervals["Siltstone"],
-            rop_values=rop_values,
-        )
-
         mechanical_limits = {
             "max_top_axial_force_N": self.optional_float(self.max_top_force.text()),
             "max_torque_Nm": self.optional_float(self.max_torque.text()),
         }
-        return data, geological_mesh, operational_parameters, mechanical_limits
+        return data, geology, operational_parameters, mechanical_limits
 
     def optional_float(self, text):
         stripped = text.strip()
@@ -630,6 +634,15 @@ class MinimizationView(QWidget):
             show_radius_lines=self.show_radius_lines.isChecked(),
         )
         self.trajectory_canvas.draw_idle()
+        plot_trajectories_3d(
+            self.trajectory_3d_canvas.figure,
+            self.current_payload["data"],
+            self.current_payload["mesh"],
+            self.current_payload["results"],
+            visible_objectives=visible_objectives,
+            zoom_to_grid=self.zoom_to_grid.isChecked(),
+        )
+        self.trajectory_3d_canvas.draw_idle()
 
     def refresh_global_curves(self):
         if not self.current_payload:
