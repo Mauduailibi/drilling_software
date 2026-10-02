@@ -25,7 +25,7 @@ Na aba Minimization:
 1. **Load GRDECL...** carrega o arquivo (obrigatório para rodar). A tabela lista as litologias encontradas e o número de células ativas de cada uma.
 2. **Wellhead (x, y, z)** e **Target (x, y, z)** usam as coordenadas da malha, com profundidade positiva para baixo (a mesma convenção de `ZCORN`). O poço Tipo 1 fica no plano vertical que passa pelos dois pontos. O alvo precisa cair em uma célula ativa da malha; senão a otimização não começa e a mensagem mostra a extensão da malha.
 3. O ROP base de cada elemento é **Base ROP × coeficiente da litologia**. A linha *Outside grid* vale para o trecho do poço fora da malha (ou em células inativas). A mesma tabela tem o fator de desgaste de broca por litologia.
-4. A aba **3D Grid** mostra as células das colunas atravessadas pelo poço e as trajetórias ótimas; **Zoom to grid** enquadra só esse trecho.
+4. A aba **3D Grid** mostra as trajetórias ótimas dentro do trecho da malha em volta do poço (da cabeça ao alvo, com margem), com células translúcidas. **Zoom to the grid cells only** enquadra só as células, útil quando o reservatório é fino perto do comprimento do poço. Durante a otimização a aba fica bloqueada, com uma animação de carregamento.
 
 Do arquivo, só são lidos `SPECGRID`/`DIMENS`, `COORD`, `ZCORN`, `ACTNUM` e a litologia; todo o resto é ignorado. A litologia vem de um keyword inteiro `FACIES`/`LITHOLOGY`/`LITHO` ou, na falta dele, das frações `SED1`, `SED2`, ...: a célula recebe o sedimento de maior fração. Coordenadas são usadas como estão no arquivo (`MAPAXES` é ignorado) e a coluna de cada ponto é localizada supondo pilares aproximadamente verticais.
 

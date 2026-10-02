@@ -6,6 +6,7 @@ malha de otimização. A geologia pode ser a ``mesh`` de intervalos ou a
 """
 import matplotlib.patches as patches
 import numpy as np
+from matplotlib.ticker import MaxNLocator
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 import drilling.features.minimization.auxiliaries as ax
@@ -234,8 +235,15 @@ def trajectory_polyline(data, l1: float, radius: float) -> tuple[np.ndarray, np.
     return horizontal, depth
 
 
+_FACE_NEIGHBORS = ((-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1))
+"""Deslocamento ``(dk, dj, di)`` da célula vizinha de cada face de ``_cell_faces``."""
+
+CELL_ALPHA_3D = 0.2
+"""Opacidade das células na vista 3D: baixa, para as trajetórias aparecerem através delas."""
+
+
 def _cell_faces(corners) -> list:
-    """As 6 faces de uma célula corner-point ``(2, 2, 2, 3)``."""
+    """As 6 faces de uma célula corner-point ``(2, 2, 2, 3)``: topo, base, J-, J+, I-, I+."""
     c = corners
     return [
         [c[0, 0, 0], c[0, 0, 1], c[0, 1, 1], c[0, 1, 0]],
@@ -247,8 +255,32 @@ def _cell_faces(corners) -> list:
     ]
 
 
-def plot_trajectories_3d(figure, data, geology, results, visible_objectives=None, show_grid_outline=True, zoom_to_grid=False):
-    """Vista 3D do trecho da malha atravessado pelo plano do poço e das trajetórias.
+def _visible_faces(grid, cells, z_range) -> tuple[list, list, list]:
+    """Faces na borda do bloco ou entre litologias diferentes, cortadas em ``z_range``.
+
+    Faces entre duas células iguais ficam de fora: empilhar faces translúcidas
+    deixaria o bloco opaco e esconderia as trajetórias.
+    """
+    selected = set(cells)
+    faces, codes, points = [], [], []
+    for cell in cells:
+        k, j, i = cell
+        code = int(grid.lithology[k, j, i])
+        corners = grid.cell_corners(k, j, i)
+        corners[..., 2] = np.clip(corners[..., 2], *z_range)
+        points.append(corners.reshape(-1, 3))
+        for face, (dk, dj, di) in zip(_cell_faces(corners), _FACE_NEIGHBORS):
+            neighbor = (k + dk, j + dj, i + di)
+            if neighbor in selected:
+                if int(grid.lithology[neighbor]) == code or neighbor < cell:
+                    continue
+            faces.append(face)
+            codes.append(code)
+    return faces, codes, points
+
+
+def plot_trajectories_3d(figure, data, geology, results, visible_objectives=None, zoom_to_grid=False):
+    """Vista 3D do trecho da malha em volta do poço e das trajetórias.
 
     Parameters
     ----------
@@ -257,62 +289,41 @@ def plot_trajectories_3d(figure, data, geology, results, visible_objectives=None
     data : DataSet
         Geometria no plano do poço (``P0`` na cabeça, ``P3`` no alvo).
     geology : GridGeology
-        Malha posicionada; fornece ``to_world`` e as células atravessadas.
+        Malha posicionada; fornece ``to_world`` e ``cells_around_well``.
     results : dict
         Resultados de ``calculate_minimization`` por objetivo.
     visible_objectives : list of str, optional
         Objetivos a desenhar; o padrão é todos.
-    show_grid_outline : bool, optional
-        Desenha a caixa envolvente da malha inteira.
     zoom_to_grid : bool, optional
-        Enquadra só as células atravessadas e corta as trajetórias nesse
-        recorte; útil quando a malha é fina perto do comprimento do poço.
+        Enquadra só as células da malha e corta as trajetórias nesse recorte;
+        útil quando o reservatório é fino perto do comprimento do poço.
     """
     clear_figure(figure)
-    axis = figure.add_subplot(111, projection="3d")
+    # Ordem de desenho fixa (células atrás, trajetórias na frente): a ordenação
+    # automática do mplot3d esconde linhas atrás de faces translúcidas.
+    axis = figure.add_subplot(111, projection="3d", computed_zorder=False)
     visible_objectives = list(results.keys()) if visible_objectives is None else list(visible_objectives)
-    alpha = float(data.drilling_time_parameters.get("mesh_plot_alpha", 0.25))
 
-    points = [geology.wellhead, geology.target]
-    cell_points = []
+    cells, z_range = geology.cells_around_well()
     grid = getattr(geology, "grid", None)
-    if grid is not None:
-        faces, colors = [], []
-        used = set()
-        for k, j, i in geology.crossed_cells():
-            corners = grid.cell_corners(k, j, i)
-            name = grid.lithology_names[grid.lithology[k, j, i]]
-            color = lithology_color(geology, name)
-            cell_faces = _cell_faces(corners)
-            faces.extend(cell_faces)
-            colors.extend([color] * len(cell_faces))
-            cell_points.extend(corners.reshape(-1, 3))
-            used.add(name)
-        if faces:
-            collection = Poly3DCollection(faces, facecolors=colors, edgecolors="#ffffff", linewidths=0.3, alpha=alpha)
-            axis.add_collection3d(collection)
-        for name in grid.lithology_names:
-            if name in used:
-                axis.plot([], [], [], color=lithology_color(geology, name), linewidth=8, alpha=0.7, label=name)
-
-        points.extend(cell_points)
-        if show_grid_outline and not zoom_to_grid:
-            z_top, z_bottom = grid.depth_range()
-            xy = grid.coord[..., 0:2].reshape(-1, 2)
-            x0, y0 = xy.min(axis=0)
-            x1, y1 = xy.max(axis=0)
-            for z in (z_top, z_bottom):
-                axis.plot([x0, x1, x1, x0, x0], [y0, y0, y1, y1, y0], [z] * 5, color="#9ca3af", linewidth=0.8, linestyle="--")
-            for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
-                axis.plot([x, x], [y, y], [z_top, z_bottom], color="#9ca3af", linewidth=0.8, linestyle="--")
-            points.extend([(x0, y0, z_top), (x1, y1, z_bottom)])
+    cell_points = []
+    if grid is not None and cells:
+        faces, codes, cell_points = _visible_faces(grid, cells, z_range)
+        colors = [lithology_color(geology, grid.lithology_names[code]) for code in codes]
+        collection = Poly3DCollection(faces, facecolors=colors, edgecolors=(1, 1, 1, 0.35), linewidths=0.3, alpha=CELL_ALPHA_3D)
+        collection.set_zorder(1)
+        axis.add_collection3d(collection)
+        for index in sorted(set(codes)):
+            name = grid.lithology_names[index]
+            axis.plot([], [], [], color=lithology_color(geology, name), linewidth=8, alpha=0.6, label=name)
+        cell_points = np.concatenate(cell_points)
 
     zoom = zoom_to_grid and len(cell_points) > 0
     if zoom:
-        cell_points = np.asarray(cell_points, dtype=float)
-        margin = 0.05 * np.maximum(cell_points.max(axis=0) - cell_points.min(axis=0), 1.0)
-        box = (cell_points.min(axis=0) - margin, cell_points.max(axis=0) + margin)
+        box = (cell_points.min(axis=0), cell_points.max(axis=0))
         points = [*box]
+    else:
+        points = [geology.wellhead, geology.target, *cell_points]
 
     for key, result in results.items():
         if key not in visible_objectives:
@@ -328,24 +339,25 @@ def plot_trajectories_3d(figure, data, geology, results, visible_objectives=None
             outside = np.any((xyz < box[0]) | (xyz > box[1]), axis=1)
             xyz[outside] = np.nan
         style = OBJECTIVE_STYLES[key]
-        axis.plot(xyz[:, 0], xyz[:, 1], xyz[:, 2], color=style["color"], linewidth=2.4, label=style["label"])
-        if not zoom:
-            points.extend(xyz)
+        axis.plot(xyz[:, 0], xyz[:, 1], xyz[:, 2], color=style["color"], linewidth=2.6, label=style["label"], zorder=10)
 
     for point, color, label in ((geology.wellhead, "#111827", "Wellhead"), (geology.target, "#7c2d12", "Target")):
         if not zoom or np.all((point >= box[0]) & (point <= box[1])):
-            axis.scatter(*point, s=52, color=color, label=label, depthshade=False)
+            axis.scatter(*point, s=52, color=color, label=label, depthshade=False, zorder=11)
 
     points = np.asarray(points, dtype=float)
     lower, upper = points.min(axis=0), points.max(axis=0)
     span = np.maximum(upper - lower, 1.0)
-    axis.set_xlim(lower[0], lower[0] + span[0])
-    axis.set_ylim(lower[1], lower[1] + span[1])
-    axis.set_zlim(lower[2] + span[2], lower[2])
+    axis.set_xlim(lower[0], upper[0])
+    axis.set_ylim(lower[1], upper[1])
+    axis.set_zlim(upper[2], lower[2])
     # Proporção real, mas sem deixar um eixo fino demais para ser lido.
-    axis.set_box_aspect(np.maximum(span / span.max(), 0.2))
-    axis.set_xlabel("X (m)")
-    axis.set_ylabel("Y (m)")
+    aspect = np.maximum(span / span.max(), 0.2)
+    axis.set_box_aspect(aspect)
+    for axis_, size in zip((axis.xaxis, axis.yaxis, axis.zaxis), aspect):
+        axis_.set_major_locator(MaxNLocator(int(3 + 4 * size)))
+    axis.set_xlabel("X (m)", labelpad=10)
+    axis.set_ylabel("Y (m)", labelpad=10)
     axis.set_zlabel("Depth (m)", labelpad=12)
     axis.set_title("Grid section crossed by the well" if zoom else "Optimized trajectories in the reservoir grid", pad=12)
     figure.subplots_adjust(left=0.0, right=1.0, bottom=0.16, top=0.94)

@@ -133,7 +133,7 @@ def test_no_grid_means_uniform_base_rop() -> None:
     geology = GridGeology(None, wellhead=(0.0, 0.0, 0.0), target=(1000.0, 0.0, 3000.0), base_rop=15.0, outside_rop_coefficient=0.8)
     assert geology.segment_at(500.0, 1500.0) == {"lithology": OUTSIDE_GRID, "rop": 12.0}
     assert geology.section_polygons() == []
-    assert geology.crossed_cells() == []
+    assert geology.cells_around_well() == ([], (0.0, 3150.0))
 
 
 @pytest.mark.parametrize(

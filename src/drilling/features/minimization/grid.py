@@ -500,17 +500,49 @@ class GridGeology:
             start = end
         return polygons
 
-    def crossed_cells(self) -> list[tuple[int, int, int]]:
-        """Células ativas ``(k, j, i)`` das colunas atravessadas pelo plano do poço."""
-        if self.grid is None:
-            return []
-        columns = {column for column in self.section_columns if column is not None}
-        return [
-            (k, j, i)
-            for j, i in sorted(columns)
-            for k in range(self.grid.nz)
-            if self.grid.actnum[k, j, i]
-        ]
+    def cells_around_well(self, margin_xy: float | None = None, margin_z: float | None = None) -> tuple[list, tuple[float, float]]:
+        """Células ativas na caixa que envolve o poço, para a vista 3D.
+
+        A caixa vai da cabeça do poço ao alvo, com ``margin_xy`` para cada lado
+        em planta e ``margin_z`` abaixo do alvo. Entram todas as colunas cujo
+        centro cai na caixa, para a vista não ter buracos.
+
+        Parameters
+        ----------
+        margin_xy : float, optional
+            Margem horizontal em metros; o padrão é o maior entre duas colunas
+            e 15 % do afastamento horizontal do poço.
+        margin_z : float, optional
+            Margem abaixo do alvo em metros; o padrão é 5 % da profundidade do poço.
+
+        Returns
+        -------
+        tuple
+            Lista de ``(k, j, i)`` e o intervalo de profundidade ``(topo, base)`` da caixa.
+        """
+        if margin_z is None:
+            margin_z = 0.05 * self.vertical_depth
+        z_range = (float(self.wellhead[2]), float(self.target[2] + margin_z))
+        grid = self.grid
+        if grid is None:
+            return [], z_range
+
+        pillars = grid.pillar_xy(float(np.mean(grid.depth_range())))
+        centers = 0.25 * (pillars[:-1, :-1] + pillars[:-1, 1:] + pillars[1:, :-1] + pillars[1:, 1:])
+        if margin_xy is None:
+            widths = np.concatenate(
+                [np.linalg.norm(np.diff(pillars, axis=0), axis=-1).ravel(), np.linalg.norm(np.diff(pillars, axis=1), axis=-1).ravel()]
+            )
+            margin_xy = max(2.0 * float(np.median(widths)), 0.15 * self.horizontal_distance)
+        lower = np.minimum(self.wellhead[0:2], self.target[0:2]) - margin_xy
+        upper = np.maximum(self.wellhead[0:2], self.target[0:2]) + margin_xy
+        columns = np.all((centers >= lower) & (centers <= upper), axis=-1)
+
+        tops = grid.zcorn[:, 0].min(axis=(2, 4))
+        bottoms = grid.zcorn[:, 1].max(axis=(2, 4))
+        selected = grid.actnum & columns[None] & (tops < z_range[1]) & (bottoms > z_range[0]) & (bottoms > tops)
+        cells = [tuple(int(index) for index in cell) for cell in np.argwhere(selected)]
+        return cells, z_range
 
     def cache_signature(self) -> tuple:
         return (

@@ -12,7 +12,6 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PySide6.QtCore import QObject, QThread, Qt, Signal
 from PySide6.QtWidgets import (
-    QApplication,
     QAbstractItemView,
     QCheckBox,
     QComboBox,
@@ -56,6 +55,7 @@ from drilling.features.minimization.plot import (
     plot_trajectories_3d,
     use_default_matplotlib_style,
 )
+from drilling.gui.loading_overlay import LoadingOverlay
 from drilling.gui.param_form import ParamForm
 
 
@@ -109,11 +109,13 @@ class MinimizationView(QWidget):
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(16)
 
-        controls = self.build_controls()
-        root.addWidget(controls, 0)
+        self.controls_panel = self.build_controls()
+        root.addWidget(self.controls_panel, 0)
 
-        results_panel = self.build_results_panel()
-        root.addWidget(results_panel, 1)
+        self.results_panel = self.build_results_panel()
+        root.addWidget(self.results_panel, 1)
+
+        self.loading_overlay = LoadingOverlay(self)
 
     def build_controls(self):
         scroll = QScrollArea()
@@ -265,7 +267,7 @@ class MinimizationView(QWidget):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(8, 8, 8, 8)
-        self.zoom_to_grid = QCheckBox("Zoom to grid section crossed by the well")
+        self.zoom_to_grid = QCheckBox("Zoom to the grid cells only (useful when the reservoir is thin)")
         self.zoom_to_grid.stateChanged.connect(self.refresh_trajectory_plot)
         layout.addWidget(self.zoom_to_grid)
         layout.addWidget(self.trajectory_3d_canvas)
@@ -531,9 +533,7 @@ class MinimizationView(QWidget):
             QMessageBox.warning(self, "Invalid inputs", str(exc))
             return
 
-        self.run_button.setEnabled(False)
-        self.status_label.setText("Running minimization...")
-        QApplication.processEvents()
+        self.set_running(True)
 
         self.thread = QThread()
         self.worker = OptimizationWorker(data, geological_mesh, operational_parameters, mechanical_limits)
@@ -547,16 +547,29 @@ class MinimizationView(QWidget):
         self.thread.finished.connect(self.thread.deleteLater)
         self.thread.start()
 
+    def set_running(self, running: bool) -> None:
+        """Bloqueia entradas e resultados e mostra a animação enquanto a otimização roda."""
+        self.run_button.setEnabled(not running)
+        self.controls_panel.setEnabled(not running)
+        self.results_panel.setEnabled(not running)
+        if running:
+            self.status_label.setText("Running minimization...")
+            self.loading_overlay.start("Running minimization...")
+        else:
+            self.loading_overlay.stop()
+
     def on_optimization_finished(self, payload):
         self.current_payload = payload
-        self.run_button.setEnabled(True)
-        self.status_label.setText("Optimization complete.")
+        self.loading_overlay.message = "Drawing results..."
+        self.loading_overlay.repaint()
         self.populate_summary(payload["results"])
         self.populate_details(payload["results"])
         self.refresh_plots()
+        self.set_running(False)
+        self.status_label.setText("Optimization complete.")
 
     def on_optimization_failed(self, message):
-        self.run_button.setEnabled(True)
+        self.set_running(False)
         self.status_label.setText("Optimization failed.")
         QMessageBox.critical(self, "Optimization error", message)
 
