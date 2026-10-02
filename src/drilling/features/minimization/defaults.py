@@ -60,8 +60,6 @@ OPERATIONAL_FIELD_SPECS = [
     FieldSpec("fatigue_torque_ratio_threshold", "Fatigue torque ratio", step=0.01, maximum=2.0),
     FieldSpec("fatigue_torque_multiplier", "Fatigue torque multiplier", step=0.01),
     FieldSpec("bit_trip_on_lithology_change", "Bit trip on lithology change", kind="bool"),
-    FieldSpec("lithology_min_run_m", "Min lithology run for bit trip", "m", step=1.0),
-    FieldSpec("min_spacing_between_bit_trips_m", "Min spacing between bit trips", "m", step=10.0),
     FieldSpec("operation_merge_distance_m", "Operation merge distance", "m", step=1.0),
     FieldSpec("casing_connection_length_m", "Casing connection length", "m", step=0.1),
     FieldSpec("casing_connection_time_h", "Casing connection time", "h", step=0.01, decimals=4),
@@ -114,8 +112,8 @@ def build_default_data():
     }
     operational_parameters = build_default_operational_parameters()
     data = DataSet(
-        (0.0, 0.0, 0.0),
-        (1000.0, 0.0, 3000.0),
+        (0, 0),
+        (1000, 3000),
         1737.5,
         8000,
         8000,
@@ -141,9 +139,8 @@ def build_default_mesh():
 
     Returns
     -------
-    HorizonModel
-        Modelo plano (intervalos de profundidade sem sobreposição) usado pela
-        aba Minimization.
+    mesh
+        Intervalos de profundidade sem sobreposição usados pela aba Minimization.
     """
     return mesh(
         sandstone=[[0, 100], [400, 500], [900, 1600], [2200, 3000]],

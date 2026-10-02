@@ -3,7 +3,7 @@
 Software desktop (PySide6) com dois módulos independentes:
 
 - **Well Path Correction** (`drilling.features.well_path`) — correção de trajetória 3D (Cases 1, 2 e 3).
-- **Minimization** (`drilling.features.minimization`) — otimização de trajetória Tipo 1 (força, torque, tempo de broca, tempo total) sobre um modelo geológico 3D (`geology.HorizonModel`: horizontes inclinados, falhas e fácies laterais, ou seja, litologias diferentes na mesma profundidade).
+- **Minimization** (`drilling.features.minimization`) — otimização de trajetória Tipo 1 (força, torque, tempo de broca, tempo total).
 
 A matemática dos solvers está congelada pelos testes golden. Qualquer mudança de fórmula, limite ou default da GUI deve falhar em `pytest`.
 
@@ -37,14 +37,12 @@ Atalhos equivalentes: `python -m drilling` e o script `drilling` instalado pelo 
 Os snapshots em `tests/goldens/` registram os números atuais dos defaults. Tolerância: `1e-10`.
 
 ```bash
-# Tudo, inclusive os quatro objetivos no grid L1 × R (~20 s)
+# Tudo, inclusive os quatro objetivos no grid L1 × R (~7 min)
 pytest
 
 # Sem as varreduras completas do grid
 pytest -m "not slow"
 ```
-
-`tests/test_geology.py` valida o modelo geológico 3D: heterogeneidade lateral, regressão das camadas planas contra a implementação antiga, soft-string contra a solução fechada e o filtro de manobras por litologia.
 
 Regenerar snapshots **somente** se a mudança numérica for intencional:
 
@@ -58,18 +56,9 @@ python scripts/capture_goldens.py --slow # inclui os 4 ótimos (alguns minutos)
 Scripts de pesquisa (não são testes) ficam em `scripts/` e usam o mesmo pacote da GUI. É o lugar para testar e visualizar resultados rapidamente, sem abrir a interface. Arquivos gerados vão para `outputs/` (ignorado pelo git).
 
 ```bash
-python scripts/optimization_demo.py      # quatro objetivos + gráficos, geologia 3D de exemplo
+python scripts/optimization_demo.py      # quatro objetivos + gráficos
 python scripts/selected_trajectory.py    # inspeciona um par (L1, R) escolhido
-python scripts/scenario_3d.py            # compara geologia plana, inclinada e com fácies lateral
-
-# Sensibilidade de malha (ΔL1, ΔR, passo do elemento)
-python scripts/sensitivity/post_std.py --run all
-python scripts/sensitivity/post_corrigido_min_l1.py --run all   # idem, restrito a L1 >= min_l1
-python scripts/sensitivity/post2.py                              # compara ΔL1 = 10 m e 1 m (lê outputs/post_outputs)
-python scripts/sensitivity/post2_torque.py
 ```
-
-Os modelos geológicos de exemplo (`flat`, `dipping`, `facies`) ficam em `scripts/example_meshes.py`.
 
 ## Fluxo de trabalho
 
