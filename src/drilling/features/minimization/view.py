@@ -420,14 +420,15 @@ class MinimizationView(QWidget):
             QMessageBox.warning(self, "Invalid GRDECL", str(exc))
 
     def set_grid(self, grid):
-        """Troca a malha carregada e refaz a tabela de litologias (coeficientes voltam a 1)."""
+        """Troca a malha carregada e refaz a tabela de litologias com os coeficientes do arquivo."""
         self.grid = grid
         if grid is None:
             self.grid_label.setText("No grid loaded. Load a GRDECL file to run the optimization.")
-            counts = {}
+            counts, file_coefficients = {}, {}
         else:
             self.grid_label.setText(f"{grid.source}\n{grid.nx} × {grid.ny} × {grid.nz} cells; {grid.extent()}")
             counts = grid.lithology_counts()
+            file_coefficients = grid.rop_coefficients
 
         self.lithology_table.setRowCount(0)
         for name in list(counts) + [OUTSIDE_GRID]:
@@ -435,7 +436,8 @@ class MinimizationView(QWidget):
             self.lithology_table.insertRow(row)
             self.lithology_table.setItem(row, 0, QTableWidgetItem(name))
             self.lithology_table.setItem(row, 1, QTableWidgetItem(str(counts[name]) if name in counts else "-"))
-            self.lithology_table.setCellWidget(row, 2, self.spin(1.0, 0.001, 1000, 0.05, decimals=3))
+            coefficient = file_coefficients.get(name, 1.0)
+            self.lithology_table.setCellWidget(row, 2, self.spin(coefficient, 0.001, 1000, 0.05, decimals=3))
             self.lithology_table.setCellWidget(row, 3, self.spin(1.0, 0, 10, 0.01, decimals=4))
 
     def lithology_inputs(self):

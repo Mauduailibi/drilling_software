@@ -6,11 +6,22 @@ otimização usa.
 
 * ``SPECGRID`` (ou ``DIMENS``), ``COORD`` e ``ZCORN``: geometria das células.
 * ``ACTNUM`` (opcional): células com 0 são ignoradas.
-* Litologia: um keyword inteiro ``FACIES``/``LITHOLOGY``/``LITHO`` ou, na
-  falta dele, as frações ``SED1``, ``SED2``, ... — a litologia da célula é o
-  sedimento de maior fração.
+* ``LITHOLOGY`` (ou ``FACIES``): código inteiro da litologia de cada célula.
+* ``LITHTAB`` (opcional): nome e coeficiente de ROP de cada código, um
+  registro por litologia::
 
-Todo o resto (``BATHYMETRY``, ``THICKNESS``, ``MAPAXES``, ``INCLUDE``...) é
+      LITHTAB
+      -- código  nome         coeficiente de ROP
+         1      'Sandstone'   1.30 /
+         3      'Shale'       0.75 /
+      /
+
+  Códigos fora da tabela viram ``Lithology <código>``, e um coeficiente
+  omitido vale 1.
+
+Parte-se de um usuário que já definiu as litologias da malha: o sistema não
+as deduz de outras propriedades. Todo o resto (``SED1``..., ``BATHYMETRY``,
+``THICKNESS``, ``MAPAXES``, ``INCLUDE``...) é
 ignorado. As coordenadas são lidas como estão no arquivo, em metros, com a
 profundidade (``ZCORN``) positiva para baixo — a mesma convenção do módulo
 Minimization.
@@ -35,10 +46,12 @@ import numpy as np
 OUTSIDE_GRID = "Outside grid"
 """Nome da litologia atribuída a pontos fora da malha ou em células inativas."""
 
-_FACIES_KEYWORDS = ("FACIES", "LITHOLOGY", "LITHO")
-_FRACTION_KEYWORD = re.compile(r"^SED\d+$")
+_LITHOLOGY_KEYWORDS = ("LITHOLOGY", "FACIES")
+_TABLE_KEYWORDS = {"LITHTAB"}
+"""Keywords de vários registros: cada registro termina em ``/`` e uma ``/`` sozinha fecha o keyword."""
 _NO_DATA_KEYWORDS = {"ECHO", "NOECHO", "GRID", "EDIT", "PROPS", "REGIONS", "SOLUTION", "SCHEDULE", "RUNSPEC", "END"}
-_KEYWORDS_READ = {"SPECGRID", "DIMENS", "COORD", "ZCORN", "ACTNUM", *_FACIES_KEYWORDS}
+_KEYWORDS_READ = {"SPECGRID", "DIMENS", "COORD", "ZCORN", "ACTNUM", *_LITHOLOGY_KEYWORDS}
+_TOKEN = re.compile(r"'[^']*'|\"[^\"]*\"|\S+")
 
 
 @dataclass
@@ -59,7 +72,9 @@ class CornerPointGrid:
     lithology : numpy.ndarray
         ``(nz, ny, nx)`` com o índice em ``lithology_names``.
     lithology_names : list of str
-        Nome de cada litologia encontrada.
+        Nome de cada litologia, na ordem dos códigos.
+    rop_coefficients : dict
+        Coeficiente de ROP de cada litologia lido de ``LITHTAB``.
     source : str
         Caminho do arquivo lido.
     """
@@ -72,6 +87,7 @@ class CornerPointGrid:
     actnum: np.ndarray
     lithology: np.ndarray
     lithology_names: list[str]
+    rop_coefficients: dict[str, float] = field(default_factory=dict)
     source: str = ""
     _digest: str = field(default="", init=False, repr=False)
 
@@ -127,7 +143,7 @@ class CornerPointGrid:
 
 def _tokens(text: str):
     text = re.sub(r"--[^\n]*", "", text)
-    for token in text.split():
+    for token in _TOKEN.findall(text):
         if token != "/" and token.endswith("/"):
             yield token[:-1]
             yield "/"
@@ -146,23 +162,49 @@ def _expand(values: list[str]) -> list[str]:
     return expanded
 
 
-def _read_keywords(text: str) -> dict[str, list[str]]:
-    keywords: dict[str, list[str]] = {}
+def _read_keywords(text: str) -> dict[str, list]:
+    keywords: dict[str, list] = {}
     current = None
     values: list[str] = []
+    records: list[list[str]] = []
     for token in _tokens(text):
         if current is None:
             name = token.upper()
             if name in _NO_DATA_KEYWORDS:
                 continue
-            current, values = name, []
-        elif token == "/":
-            if current in _KEYWORDS_READ or _FRACTION_KEYWORD.match(current):
+            current, values, records = name, [], []
+        elif token != "/":
+            values.append(token)
+        elif current in _TABLE_KEYWORDS:
+            if values:
+                records.append(values)
+                values = []
+            else:
+                keywords[current] = records
+                current = None
+        else:
+            if current in _KEYWORDS_READ:
                 keywords[current] = _expand(values)
             current = None
-        else:
-            values.append(token)
     return keywords
+
+
+def _lithology_table(records: list[list[str]]) -> dict[int, tuple[str, float]]:
+    """``{código: (nome, coeficiente de ROP)}`` a partir dos registros de ``LITHTAB``."""
+    table: dict[int, tuple[str, float]] = {}
+    for record in records:
+        if len(record) not in (2, 3):
+            raise ValueError(f"LITHTAB record {' '.join(record)!r} must be: code 'name' [ROP coefficient] /")
+        code, name = int(record[0]), record[1].strip("'\"")
+        coefficient = float(record[2]) if len(record) == 3 else 1.0
+        if code in table:
+            raise ValueError(f"LITHTAB defines code {code} twice.")
+        if name in (entry[0] for entry in table.values()):
+            raise ValueError(f"LITHTAB uses the name {name!r} twice.")
+        if coefficient <= 0:
+            raise ValueError(f"LITHTAB coefficient for {name!r} must be positive.")
+        table[code] = (name, coefficient)
+    return table
 
 
 def _floats(keywords: dict, name: str, size: int) -> np.ndarray:
@@ -188,8 +230,9 @@ def read_grdecl(path: str | Path) -> CornerPointGrid:
     Raises
     ------
     ValueError
-        Se faltar ``SPECGRID``/``DIMENS``, ``COORD`` ou ``ZCORN``, ou se um
-        array tiver tamanho incompatível com as dimensões.
+        Se faltar ``SPECGRID``/``DIMENS``, ``COORD``, ``ZCORN`` ou
+        ``LITHOLOGY``/``FACIES``, se um array tiver tamanho incompatível com as
+        dimensões ou se ``LITHTAB`` for inválida.
     """
     path = Path(path)
     keywords = _read_keywords(path.read_text(encoding="utf-8", errors="replace"))
@@ -210,20 +253,20 @@ def read_grdecl(path: str | Path) -> CornerPointGrid:
     else:
         actnum = np.ones((nz, ny, nx), dtype=bool)
 
-    facies_key = next((name for name in _FACIES_KEYWORDS if name in keywords), None)
-    fraction_keys = sorted((name for name in keywords if _FRACTION_KEYWORD.match(name)), key=lambda name: int(name[3:]))
-    if facies_key is not None:
-        codes = _floats(keywords, facies_key, n_cells).astype(int).reshape(nz, ny, nx)
-        unique_codes = sorted(set(codes[actnum].ravel().tolist()))
-        lithology_names = [f"{facies_key.capitalize()} {code}" for code in unique_codes]
-        lithology = np.searchsorted(unique_codes, codes).clip(0, max(len(unique_codes) - 1, 0))
-    elif fraction_keys:
-        fractions = np.stack([_floats(keywords, name, n_cells).reshape(nz, ny, nx) for name in fraction_keys])
-        lithology_names = list(fraction_keys)
-        lithology = np.argmax(fractions, axis=0)
-    else:
-        lithology_names = ["Rock"]
-        lithology = np.zeros((nz, ny, nx), dtype=int)
+    lithology_key = next((name for name in _LITHOLOGY_KEYWORDS if name in keywords), None)
+    if lithology_key is None:
+        raise ValueError("GRDECL file has no LITHOLOGY (or FACIES) keyword with the lithology code of each cell.")
+    raw_codes = _floats(keywords, lithology_key, n_cells)
+    if not np.all(raw_codes == np.round(raw_codes)):
+        raise ValueError(f"GRDECL keyword {lithology_key} must contain integer lithology codes.")
+    codes = raw_codes.astype(int).reshape(nz, ny, nx)
+    table = _lithology_table(keywords.get("LITHTAB", []))
+
+    # Litologias da tabela e as usadas pelas células ativas, na ordem dos códigos.
+    all_codes = sorted(set(table) | set(codes[actnum].ravel().tolist()))
+    lithology_names = [table[code][0] if code in table else f"Lithology {code}" for code in all_codes]
+    rop_coefficients = {table[code][0]: table[code][1] for code in all_codes if code in table}
+    lithology = np.searchsorted(all_codes, codes).clip(0, max(len(all_codes) - 1, 0))
 
     return CornerPointGrid(
         nx=nx,
@@ -234,6 +277,7 @@ def read_grdecl(path: str | Path) -> CornerPointGrid:
         actnum=actnum,
         lithology=lithology.astype(int),
         lithology_names=lithology_names,
+        rop_coefficients=rop_coefficients,
         source=str(path),
     )
 
@@ -273,7 +317,8 @@ class GridGeology:
     base_rop : float
         ROP de referência em m/h.
     rop_coefficients : dict, optional
-        Coeficiente adimensional por litologia; o padrão é 1.
+        Coeficiente adimensional por litologia; sobrepõe o de ``LITHTAB``.
+        Litologias sem coeficiente em nenhum dos dois valem 1.
     outside_rop_coefficient : float, optional
         Coeficiente fora da malha e em células inativas.
     section_step : float, optional
@@ -318,7 +363,7 @@ class GridGeology:
         self.section_step = float(section_step)
 
         names = [] if grid is None else list(grid.lithology_names)
-        coefficients = {name: 1.0 for name in names}
+        coefficients = {name: grid.rop_coefficients.get(name, 1.0) for name in names}
         coefficients.update(rop_coefficients or {})
         coefficients[OUTSIDE_GRID] = float(outside_rop_coefficient)
         for name, value in coefficients.items():
