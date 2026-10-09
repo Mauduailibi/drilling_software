@@ -441,6 +441,47 @@ def project_direction(Pin, Pbd):
     return normalize(Pbd - Pin)
 
 
+def project_trajectory(Pin, Pbd, pt, dls_deg=3.0):
+    """Geometria do poço planejado, usada só para desenho.
+
+    O poço planejado segue reto de ``Pin`` até o ponto de desvio ``Pbd`` e, a
+    partir dele, ganha ângulo com DLS constante, tangente à direção
+    ``Pin→Pbd``, até a reta que chega a ``pt`` (o mesmo arco de
+    ``compute_case2_trajectory``). Assim o desenho passa exatamente por
+    ``Pbd`` e só começa a curvar nele.
+
+    Parameters
+    ----------
+    Pin, Pbd, pt : array_like
+        Origem do projeto, ponto de desvio e alvo.
+    dls_deg : float, optional
+        Severidade de dogleg do trecho de ganho de ângulo, em graus por 30 m.
+
+    Returns
+    -------
+    dict
+        ``points`` (polilinha ``(n, 3)``), ``kickoff_point`` (``Pbd``),
+        ``end_of_build`` (fim do arco, ou ``None`` se não houver arco) e
+        ``radius``. Se o alvo estiver dentro do raio de curvatura, não há arco
+        possível com esse DLS: a polilinha vira ``Pin→Pbd→pt``.
+    """
+    Pin = np.asarray(Pin, float)
+    Pbd = np.asarray(Pbd, float)
+    pt = np.asarray(pt, float)
+    try:
+        build = compute_case2_trajectory(Pbd, pt, project_direction(Pin, Pbd), dls_deg=dls_deg)
+    except ValueError:
+        build = None
+    if build is None or not np.isfinite(build["radius"]):
+        return {"points": np.vstack([Pin, Pbd, pt]), "kickoff_point": Pbd, "end_of_build": None, "radius": np.inf}
+    return {
+        "points": np.vstack([Pin, build["arc"], pt]),
+        "kickoff_point": Pbd,
+        "end_of_build": build["tangent_point"],
+        "radius": build["radius"],
+    }
+
+
 def angle_between(u, v):
     """Ângulo sem sinal, em radianos, entre dois vetores.
 
