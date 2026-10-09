@@ -2,8 +2,10 @@
 
 Uso::
 
-    python scripts/make_test_grid.py && python scripts/grid_demo.py outputs/synthetic_basin.grdecl \
-        --coef SED1=1.6 --coef SED3=0.8 --coef SED4=0.5
+    python scripts/make_test_grid.py && python scripts/grid_demo.py outputs/synthetic_basin.grdecl
+
+Os coeficientes de ROP vêm da tabela ``LITHTAB`` do arquivo; ``--coef Shale=0.7``
+sobrepõe o de uma litologia.
 
 As figuras vão para ``outputs/grid_demo/``.
 """
@@ -35,7 +37,7 @@ def main() -> None:
     parser.add_argument("--wellhead", default="1000, 1500, 0", help="x, y, z da cabeça do poço")
     parser.add_argument("--target", default="2000, 1500, 3000", help="x, y, z do alvo")
     parser.add_argument("--base-rop", type=float, default=DEFAULT_BASE_ROP)
-    parser.add_argument("--coef", action="append", default=[], help="LITOLOGIA=coeficiente (repetível)")
+    parser.add_argument("--coef", action="append", default=[], help="LITOLOGIA=coeficiente, sobrepõe o do arquivo (repetível)")
     parser.add_argument("--l1-step", type=float, default=10.0, help="passo de L1 da varredura (m)")
     args = parser.parse_args()
 

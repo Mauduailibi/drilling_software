@@ -450,6 +450,21 @@ ACTNUM
   1 1 1 1
 /
 
+-- Litologia de cada célula, já definida pelo usuário (código de LITHTAB).
+-- Camada 1 (0-10 m): folhelho; camada 2 (10-20 m): siltito; camada 3 (20-30 m): arenito.
+LITHOLOGY
+  100*3 100*2 100*1 /
+
+-- Código, nome e coeficiente de ROP (adimensional; multiplica o ROP base).
+-- Rochas mais friáveis perfuram mais rápido e têm coeficiente maior.
+LITHTAB
+-- código  nome          coeficiente
+   1      'Sandstone'    1.30 /
+   2      'Siltstone'    1.00 /
+   3      'Shale'        0.80 /
+/
+
+-- Frações de sedimento originais do KVL: mantidas como referência, o sistema não as usa.
 SED1
   0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1
   0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1

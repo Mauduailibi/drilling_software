@@ -1,8 +1,10 @@
 """Gera uma malha GRDECL sintética para testar a otimização sobre uma malha de verdade.
 
 A malha é só um arquivo de teste: o sistema não constrói malhas, ele as lê.
-Ela imita o formato exportado pelo KVL (frações ``SED1``..``SED4`` por célula)
-e cobre o poço inteiro, do fundo do mar até abaixo do alvo padrão da GUI:
+Ela segue o formato que o sistema espera de um usuário que já definiu as
+litologias (código ``LITHOLOGY`` por célula e tabela ``LITHTAB`` com nome e
+coeficiente de ROP) e cobre o poço inteiro, do fundo do mar até abaixo do
+alvo padrão da GUI:
 
 * 3 km × 3 km em planta, 30 × 30 colunas de 100 m;
 * 12 camadas de 150 a 400 m, do fundo do mar (0 m) até ~3,4 km;
@@ -10,8 +12,8 @@ e cobre o poço inteiro, do fundo do mar até abaixo do alvo padrão da GUI:
 * um canal arenoso sinuoso em três camadas, ou seja, litologias diferentes
   na mesma profundidade.
 
-Convenção desta malha (só deste arquivo): SED1 ≈ arenito, SED2 ≈ siltito,
-SED3 ≈ folhelho, SED4 ≈ carbonato.
+Os coeficientes seguem a facilidade de perfuração: arenito 1,30, siltito 1,00,
+folhelho 0,80 e calcário 0,60.
 
 Uso::
 
@@ -31,24 +33,32 @@ import numpy as np
 
 OUTPUT = Path(__file__).resolve().parents[1] / "outputs" / "synthetic_basin.grdecl"
 
-# Espessura (m) e frações SED1..SED4 de cada camada, do topo para a base.
+# Código: (nome, coeficiente de ROP). Rochas mais friáveis têm coeficiente maior.
+LITHOLOGIES = {
+    1: ("Sandstone", 1.30),
+    2: ("Siltstone", 1.00),
+    3: ("Shale", 0.80),
+    4: ("Limestone", 0.60),
+}
+SANDSTONE, SILTSTONE, SHALE, LIMESTONE = 1, 2, 3, 4
+
+# Espessura (m) e litologia de cada camada, do topo para a base.
 LAYERS = [
-    (150.0, (0.15, 0.30, 0.50, 0.05)),
-    (250.0, (0.55, 0.25, 0.15, 0.05)),
-    (300.0, (0.10, 0.25, 0.60, 0.05)),
-    (250.0, (0.10, 0.55, 0.30, 0.05)),
-    (350.0, (0.05, 0.15, 0.20, 0.60)),
-    (300.0, (0.10, 0.20, 0.65, 0.05)),
-    (250.0, (0.60, 0.20, 0.15, 0.05)),
-    (400.0, (0.05, 0.25, 0.65, 0.05)),
-    (200.0, (0.10, 0.20, 0.10, 0.60)),
-    (350.0, (0.15, 0.50, 0.30, 0.05)),
-    (300.0, (0.65, 0.20, 0.10, 0.05)),
-    (300.0, (0.05, 0.15, 0.70, 0.10)),
+    (150.0, SHALE),
+    (250.0, SANDSTONE),
+    (300.0, SHALE),
+    (250.0, SILTSTONE),
+    (350.0, LIMESTONE),
+    (300.0, SHALE),
+    (250.0, SANDSTONE),
+    (400.0, SHALE),
+    (200.0, LIMESTONE),
+    (350.0, SILTSTONE),
+    (300.0, SANDSTONE),
+    (300.0, SHALE),
 ]
 CHANNEL_LAYERS = (2, 5, 7)
 """Camadas de folhelho cortadas pelo canal arenoso."""
-CHANNEL_FRACTIONS = (0.70, 0.20, 0.08, 0.02)
 
 
 def surfaces(x: np.ndarray, y: np.ndarray, size: float) -> np.ndarray:
@@ -91,12 +101,12 @@ def build(nx: int, ny: int, size: float) -> dict:
     yc = 0.5 * (ys[:-1] + ys[1:])
     cx, cy = np.meshgrid(xc, yc)
     channel = channel_mask(cx, cy, size)
-    fractions = np.empty((4, nz, ny, nx))
-    for k, (_, layer_fractions) in enumerate(LAYERS):
-        fractions[:, k] = np.asarray(layer_fractions)[:, None, None]
+    lithology = np.empty((nz, ny, nx), dtype=int)
+    for k, (_, code) in enumerate(LAYERS):
+        lithology[k] = code
         if k in CHANNEL_LAYERS:
-            fractions[:, k, channel] = np.asarray(CHANNEL_FRACTIONS)[:, None]
-    return {"nx": nx, "ny": ny, "nz": nz, "coord": coord, "zcorn": zcorn, "fractions": fractions}
+            lithology[k, channel] = SANDSTONE
+    return {"nx": nx, "ny": ny, "nz": nz, "coord": coord, "zcorn": zcorn, "lithology": lithology}
 
 
 def _block(name: str, values, fmt: str) -> str:
@@ -109,15 +119,16 @@ def write_grdecl(path: Path, model: dict) -> None:
     nx, ny, nz = model["nx"], model["ny"], model["nz"]
     text = [
         "-- Malha sintética de teste gerada por scripts/make_test_grid.py\n",
-        "-- SED1 ~ arenito, SED2 ~ siltito, SED3 ~ folhelho, SED4 ~ carbonato\n",
         "-- Profundidade (ZCORN) em metros abaixo do fundo do mar, positiva para baixo.\n\n",
         f"SPECGRID\n  {nx} {ny} {nz} 1 F /\n\n",
         _block("COORD", model["coord"], "{:.2f}"),
         _block("ZCORN", model["zcorn"], "{:.2f}"),
         f"ACTNUM\n  {nx * ny * nz}*1 /\n\n",
+        _block("LITHOLOGY", model["lithology"], "{:d}"),
+        "-- código  nome  coeficiente de ROP\nLITHTAB\n",
+        *(f"  {code}  '{name}'  {coefficient:.2f} /\n" for code, (name, coefficient) in LITHOLOGIES.items()),
+        "/\n",
     ]
-    for index, fractions in enumerate(model["fractions"], start=1):
-        text.append(_block(f"SED{index}", fractions, "{:g}"))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(text), encoding="utf-8")
 

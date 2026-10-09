@@ -22,26 +22,46 @@ O sistema não constrói malhas: ele lê uma malha corner-point pronta no format
 
 Na aba Minimization:
 
-1. **Load GRDECL...** carrega o arquivo (obrigatório para rodar). A tabela lista as litologias encontradas e o número de células ativas de cada uma.
+1. **Load GRDECL...** carrega o arquivo (obrigatório para rodar). A tabela lista as litologias do arquivo, o número de células ativas de cada uma e o coeficiente de ROP lido do arquivo, que pode ser editado antes de rodar.
 2. **Wellhead (x, y, z)** e **Target (x, y, z)** usam as coordenadas da malha, com profundidade positiva para baixo (a mesma convenção de `ZCORN`). O poço Tipo 1 fica no plano vertical que passa pelos dois pontos. O alvo precisa cair em uma célula ativa da malha; senão a otimização não começa e a mensagem mostra a extensão da malha.
 3. O ROP base de cada elemento é **Base ROP × coeficiente da litologia**. A linha *Outside grid* vale para o trecho do poço fora da malha (ou em células inativas). A mesma tabela tem o fator de desgaste de broca por litologia.
 4. A aba **3D Grid** mostra as trajetórias ótimas dentro do trecho da malha em volta do poço (da cabeça ao alvo, com margem), com células translúcidas. **Zoom to the grid cells only** enquadra só as células, útil quando o reservatório é fino perto do comprimento do poço. Durante a otimização a aba fica bloqueada, com uma animação de carregamento.
 
-Do arquivo, só são lidos `SPECGRID`/`DIMENS`, `COORD`, `ZCORN`, `ACTNUM` e a litologia; todo o resto é ignorado. A litologia vem de um keyword inteiro `FACIES`/`LITHOLOGY`/`LITHO` ou, na falta dele, das frações `SED1`, `SED2`, ...: a célula recebe o sedimento de maior fração. Coordenadas são usadas como estão no arquivo (`MAPAXES` é ignorado) e a coluna de cada ponto é localizada supondo pilares aproximadamente verticais.
+O sistema parte de um usuário que já definiu as litologias da malha. Do arquivo, só são lidos `SPECGRID`/`DIMENS`, `COORD`, `ZCORN`, `ACTNUM` e:
+
+- `LITHOLOGY` (ou `FACIES`): o código inteiro da litologia de cada célula (obrigatório);
+- `LITHTAB` (opcional): o nome e o coeficiente de ROP de cada código, um registro por litologia terminado em `/`, e uma `/` sozinha fecha a tabela.
+
+```
+LITHOLOGY
+  100*3 100*2 100*1 /
+
+LITHTAB
+-- código  nome          coeficiente de ROP
+   1      'Sandstone'    1.30 /
+   2      'Siltstone'    1.00 /
+   3      'Shale'        0.80 /
+/
+```
+
+Códigos que não estão na tabela viram `Lithology <código>`, e um coeficiente omitido vale 1. Todo o resto é ignorado, inclusive frações de sedimento como `SED1`, `SED2`, .... Coordenadas são usadas como estão no arquivo (`MAPAXES` é ignorado) e a coluna de cada ponto é localizada supondo pilares aproximadamente verticais.
 
 ```python
 from drilling.features.minimization import GridGeology, read_grdecl
 
 grid = read_grdecl("tests/data/kvl_quarter_five_spot.grdecl")
-geology = GridGeology(grid, wellhead=(-40, 500, -2975), target=(960, 500, 25),
-                      base_rop=15.0, rop_coefficients={"SED1": 1.5, "SED3": 0.7})
-geology.segment_at(950.0, 2990.0)   # {'lithology': 'SED2', 'rop': 15.0}
+grid.rop_coefficients                # {'Sandstone': 1.3, 'Siltstone': 1.0, 'Shale': 0.8}
+geology = GridGeology(grid, wellhead=(-40, 500, -2975), target=(960, 500, 25), base_rop=15.0)
+geology.segment_at(950.0, 2990.0)   # {'lithology': 'Siltstone', 'rop': 15.0}
+
+# Coeficientes passados aqui sobrepõem os do arquivo.
+GridGeology(grid, (-40, 500, -2975), (960, 500, 25), base_rop=15.0, rop_coefficients={"Shale": 0.6})
 ```
 
 Malhas de teste:
 
-- `tests/data/kvl_quarter_five_spot.grdecl`: exportação real do KVL, mas é um modelo mínimo (10 × 10 × 3 células de 100 × 100 × 10 m, só 30 m de espessura). Serve para testar o leitor, não para otimizar um poço de 3 km.
-- `python scripts/make_test_grid.py` gera `outputs/synthetic_basin.grdecl`: 3 × 3 km, 12 camadas até ~3,5 km, mergulho, anticlinal e um canal arenoso. Os valores padrão de Wellhead/Target da GUI caem dentro dela.
+- `tests/data/kvl_quarter_five_spot.grdecl`: exportação do KVL, um modelo mínimo (10 × 10 × 3 células de 100 × 100 × 10 m, só 30 m de espessura), com `LITHOLOGY` e `LITHTAB` acrescentados: folhelho, siltito e arenito, do topo para a base. Serve para testar o leitor, não para otimizar um poço de 3 km.
+- `python scripts/make_test_grid.py` gera `outputs/synthetic_basin.grdecl`: 3 × 3 km, 12 camadas até ~3,5 km, mergulho, anticlinal e um canal arenoso, com arenito (1,30), siltito (1,00), folhelho (0,80) e calcário (0,60). Os valores padrão de Wellhead/Target da GUI caem dentro dela.
 
 A `mesh` de intervalos de profundidade (`build_default_mesh`) continua existindo só como geologia dos testes golden e dos scripts antigos.
 
@@ -88,7 +108,7 @@ Scripts de pesquisa (não são testes) ficam em `scripts/` e usam o mesmo pacote
 python scripts/optimization_demo.py      # quatro objetivos + gráficos
 python scripts/selected_trajectory.py    # inspeciona um par (L1, R) escolhido
 python scripts/make_test_grid.py         # gera outputs/synthetic_basin.grdecl
-python scripts/grid_demo.py outputs/synthetic_basin.grdecl --coef SED1=1.6   # otimização sobre uma GRDECL + figuras 2D/3D
+python scripts/grid_demo.py outputs/synthetic_basin.grdecl   # otimização sobre uma GRDECL + figuras 2D/3D (--coef Shale=0.7 sobrepõe o arquivo)
 ```
 
 ## Fluxo de trabalho
