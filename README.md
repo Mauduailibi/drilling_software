@@ -61,7 +61,7 @@ GridGeology(grid, (-40, 500, -2975), (960, 500, 25), base_rop=15.0, rop_coeffici
 Malhas de teste:
 
 - `tests/data/kvl_quarter_five_spot.grdecl`: exportação do KVL, um modelo mínimo (10 × 10 × 3 células de 100 × 100 × 10 m, só 30 m de espessura), com `LITHOLOGY` e `LITHTAB` acrescentados: folhelho, siltito e arenito, do topo para a base. Serve para testar o leitor, não para otimizar um poço de 3 km.
-- `python scripts/make_test_grid.py` gera `outputs/synthetic_basin.grdecl`: 3 × 3 km, 12 camadas até ~3,5 km, mergulho, anticlinal e um canal arenoso, com arenito (1,30), siltito (1,00), folhelho (0,80) e calcário (0,60). Os valores padrão de Wellhead/Target da GUI caem dentro dela.
+- `tests/data/synthetic_basin.grdecl`: malha realista de teste, gerada por `python scripts/make_test_grid.py`. Tem 3 × 3 km em planta (20 × 20 colunas de 150 m) e 16 formações até ~3,7 km, divididas em 60 camadas (até 100 m no capeamento, ~25 m nos reservatórios). Inclui mergulho, anticlinal, uma falha normal com rejeito de até 90 m, um arenito que se acunha (células inativas) e um canal turbidítico. Usa arenito (1,30), siltito (1,00), marga (0,90), folhelho (0,80) e calcário (0,60). Os valores padrão de Wellhead/Target da GUI caem dentro dela, com o alvo no reservatório arenoso. Um teste garante que o arquivo continua igual ao que o gerador produz.
 
 A `mesh` de intervalos de profundidade (`build_default_mesh`) continua existindo só como geologia dos testes golden e dos scripts antigos.
 
@@ -107,8 +107,8 @@ Scripts de pesquisa (não são testes) ficam em `scripts/` e usam o mesmo pacote
 ```bash
 python scripts/optimization_demo.py      # quatro objetivos + gráficos
 python scripts/selected_trajectory.py    # inspeciona um par (L1, R) escolhido
-python scripts/make_test_grid.py         # gera outputs/synthetic_basin.grdecl
-python scripts/grid_demo.py outputs/synthetic_basin.grdecl   # otimização sobre uma GRDECL + figuras 2D/3D (--coef Shale=0.7 sobrepõe o arquivo)
+python scripts/make_test_grid.py         # regenera tests/data/synthetic_basin.grdecl
+python scripts/grid_demo.py tests/data/synthetic_basin.grdecl   # otimização sobre uma GRDECL + figuras 2D/3D (--coef Shale=0.7 sobrepõe o arquivo)
 ```
 
 ## Fluxo de trabalho

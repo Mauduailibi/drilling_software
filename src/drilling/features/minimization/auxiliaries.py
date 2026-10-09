@@ -574,6 +574,7 @@ LITHOLOGY_COLORS = {
     "Limestone": "#f6e8c3",
     "Dolomite": "#5ab4ac",
     "Evaporite": "#c2a5cf",
+    "Marl": "#9ecae1",
     "Undefined": "#dddddd",
 }
 

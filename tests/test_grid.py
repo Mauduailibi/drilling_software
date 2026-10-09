@@ -14,6 +14,7 @@ from drilling.features.minimization.grid import OUTSIDE_GRID, GridGeology, read_
 from drilling.features.minimization.minimal import drilling_time_breakdown
 
 SAMPLE_GRID = Path(__file__).parent / "data" / "kvl_quarter_five_spot.grdecl"
+BASIN_GRID = Path(__file__).parent / "data" / "synthetic_basin.grdecl"
 
 
 def _write_layered_grid(
@@ -221,23 +222,48 @@ def test_gui_builds_geology_from_loaded_grid() -> None:
     assert set(operational["lithology_wear_factors"]) == {"Sandstone", "Siltstone", "Shale", OUTSIDE_GRID}
 
 
-def test_synthetic_basin_generator_covers_gui_defaults(tmp_path: Path) -> None:
-    """A malha de ``scripts/make_test_grid.py`` é lida e contém o poço padrão da GUI."""
+def _load_generator():
     script = Path(__file__).parents[1] / "scripts" / "make_test_grid.py"
     spec = importlib.util.spec_from_file_location("make_test_grid", script)
     generator = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(generator)
+    return generator
 
+
+def test_basin_grid_is_what_the_generator_writes(tmp_path: Path) -> None:
+    """``tests/data/synthetic_basin.grdecl`` está em dia com ``scripts/make_test_grid.py``."""
+    generator = _load_generator()
     path = tmp_path / "basin.grdecl"
-    generator.write_grdecl(path, generator.build(nx=12, ny=12, size=3000.0))
-    grid = read_grdecl(path)
-    assert (grid.nx, grid.ny, grid.nz) == (12, 12, 12)
-    assert all(count > 0 for count in grid.lithology_counts().values())
-    assert grid.rop_coefficients == {"Sandstone": 1.30, "Siltstone": 1.00, "Shale": 0.80, "Limestone": 0.60}
+    generator.write_grdecl(path, generator.build(nx=20, ny=20, size=3000.0))
+    assert path.read_text(encoding="utf-8") == BASIN_GRID.read_text(encoding="utf-8")
 
-    geology = GridGeology(grid, DEFAULT_WELLHEAD, DEFAULT_TARGET, base_rop=15.0)
+
+def test_basin_grid_is_realistic() -> None:
+    """A malha de teste tem refinamento, falha, acunhamento e as cinco litologias com seus coeficientes."""
+    grid = read_grdecl(BASIN_GRID)
+    assert (grid.nx, grid.ny, grid.nz) == (20, 20, 60)
+    assert grid.rop_coefficients == {"Sandstone": 1.30, "Siltstone": 1.00, "Marl": 0.90, "Shale": 0.80, "Limestone": 0.60}
+    assert all(count > 0 for count in grid.lithology_counts().values())
+    assert grid.depth_range()[1] > 3500.0
+
+    thickness = grid.zcorn[:, 1] - grid.zcorn[:, 0]
+    assert thickness.min() >= 0.0
+    assert np.allclose(grid.zcorn[1:, 0], grid.zcorn[:-1, 1])
+    # Acunhamento: células de espessura zero ficam inativas.
+    assert (~grid.actnum).sum() > 0
+    assert np.all(thickness.max(axis=(2, 4))[~grid.actnum] <= 0.01)
+    # Falha normal: os cantos de colunas vizinhas sobre um mesmo pilar diferem em uma única linha.
+    jump = np.abs(grid.zcorn[:, :, :, :, 1:, 0] - grid.zcorn[:, :, :, :, :-1, 1]).max(axis=(0, 1, 2, 3))
+    assert np.count_nonzero(jump > 1.0) == 1
+    assert jump.max() == pytest.approx(90.0)
+
+
+def test_basin_grid_contains_gui_default_well() -> None:
+    """O poço padrão da GUI cai no reservatório arenoso e atravessa as cinco litologias."""
+    geology = GridGeology(read_grdecl(BASIN_GRID), DEFAULT_WELLHEAD, DEFAULT_TARGET, base_rop=15.0)
     data, _ = build_default_data()
     assert geology.P3 == pytest.approx(data.P3)
+    assert geology.segment_at(*geology.P3)["lithology"] == "Sandstone"
     timing = drilling_time_breakdown(data, geology, 1200.0, 500.0)
     assert OUTSIDE_GRID not in timing["by_lithology"]
-    assert len(timing["by_lithology"]) >= 3
+    assert set(timing["by_lithology"]) == {"Sandstone", "Siltstone", "Marl", "Shale", "Limestone"}

@@ -2,7 +2,7 @@
 
 Uso::
 
-    python scripts/make_test_grid.py && python scripts/grid_demo.py outputs/synthetic_basin.grdecl
+    python scripts/grid_demo.py tests/data/synthetic_basin.grdecl
 
 Os coeficientes de ROP vêm da tabela ``LITHTAB`` do arquivo; ``--coef Shale=0.7``
 sobrepõe o de uma litologia.
