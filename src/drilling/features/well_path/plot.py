@@ -6,7 +6,7 @@ são apenas de apresentação.
 """
 import numpy as np
 import pyvista as pv
-from .logic import normalize
+from .logic import normalize, project_trajectory
 
 
 def get_plot_xylim(p1, pt, center, arc_points, margem=100):
@@ -42,6 +42,20 @@ def get_plot_xylim(p1, pt, center, arc_points, margem=100):
     ylim = (np.round(ymin, 0) - margem, np.round(ymax, 0) + margem)
 
     return xlim, ylim
+
+
+def add_project_trajectory(plotter, Pin, Pbd, pt, marker_radius, legend_items):
+    """Desenha o poço planejado: reta até ``Pbd``, ganho de ângulo e tangente até ``pt``.
+
+    Marca o ponto de desvio (``Pbd``) e o fim do ganho de ângulo, que são os
+    pontos onde a curva começa e termina.
+    """
+    project = project_trajectory(Pin, Pbd, pt)
+    plotter.add_mesh(pv.lines_from_points(project["points"]), color="brown", line_width=4)
+    legend_items.append(("Project trajectory", "brown"))
+    plotter.add_mesh(pv.Sphere(marker_radius, project["kickoff_point"]), color="black")
+    if project["end_of_build"] is not None:
+        plotter.add_mesh(pv.Sphere(marker_radius, project["end_of_build"]), color="black")
 
 
 def plot_case_1(plotter, result, show_project_trajectory, show_points_coordinates):
@@ -113,30 +127,7 @@ def plot_case_1(plotter, result, show_project_trajectory, show_points_coordinate
     legend_items.append(("Arc segment", "blue"))
 
     if show_project_trajectory:
-        vec_in = Pbd - Pin
-        vec_out = pt - Pbd
-        len_in = np.linalg.norm(vec_in)
-        len_out = np.linalg.norm(vec_out)
-        u_in = vec_in / len_in
-        u_out = vec_out / len_out
-
-        tangent_dist = min(200, len_in * 0.45, len_out * 0.45)
-        p_curve_start = Pbd - u_in * tangent_dist
-        p_curve_end = Pbd + u_out * tangent_dist
-
-        t_vals = np.linspace(0, 1, 30)
-        curve_pts = []
-        for t in t_vals:
-            pt_interp = (1 - t) ** 2 * p_curve_start + 2 * (1 - t) * t * Pbd + t ** 2 * p_curve_end
-            curve_pts.append(pt_interp)
-
-        full_path = [Pin] + curve_pts + [pt]
-        plotter.add_mesh(pv.lines_from_points(np.array(full_path)), color="brown", line_width=4)
-        legend_items.append(("Project trajectory", "brown"))
-
-        R_traj = np.linalg.norm(pt - p1) * 0.015
-        plotter.add_mesh(pv.Sphere(R_traj, p_curve_start), color="black")
-        plotter.add_mesh(pv.Sphere(R_traj, p_curve_end), color="black")
+        add_project_trajectory(plotter, Pin, Pbd, pt, np.linalg.norm(pt - p1) * 0.015, legend_items)
 
     for P in arc_pts:
         plotter.add_mesh(pv.Line(center, P), color="gray", line_width=1, opacity=0.6)
@@ -250,30 +241,7 @@ def plot_case_2(plotter, result, show_project_trajectory, show_points_coordinate
     legend_items.append(("Straight segment", "green"))
 
     if show_project_trajectory:
-        vec_in = Pbd - Pin
-        vec_out = pt - Pbd
-        len_in = np.linalg.norm(vec_in)
-        len_out = np.linalg.norm(vec_out)
-        u_in = vec_in / len_in
-        u_out = vec_out / len_out
-
-        tangent_dist = min(200, len_in * 0.45, len_out * 0.45)
-        p_curve_start = Pbd - u_in * tangent_dist
-        p_curve_end = Pbd + u_out * tangent_dist
-
-        t_vals = np.linspace(0, 1, 30)
-        curve_pts = []
-        for t in t_vals:
-            pt_interp = (1 - t) ** 2 * p_curve_start + 2 * (1 - t) * t * Pbd + t ** 2 * p_curve_end
-            curve_pts.append(pt_interp)
-
-        full_path = [Pin] + curve_pts + [pt]
-        plotter.add_mesh(pv.lines_from_points(np.array(full_path)), color="brown", line_width=4)
-        legend_items.append(("Project trajectory", "brown"))
-
-        R_traj = np.linalg.norm(pt - p1) * 0.015
-        plotter.add_mesh(pv.Sphere(R_traj, p_curve_start), color="black")
-        plotter.add_mesh(pv.Sphere(R_traj, p_curve_end), color="black")
+        add_project_trajectory(plotter, Pin, Pbd, pt, np.linalg.norm(pt - p1) * 0.015, legend_items)
 
     for P in arc_pts:
         plotter.add_mesh(pv.Line(center, P), color="gray", line_width=1, opacity=0.6)
@@ -423,30 +391,7 @@ def plot_case_3(plotter, result, show_project_trajectory, show_points_coordinate
         legend_items.append(("Final straight segment", "red"))
 
     if show_project_trajectory:
-        vec_in = Pbd - Pin
-        vec_out = pt - Pbd
-        len_in = np.linalg.norm(vec_in)
-        len_out = np.linalg.norm(vec_out)
-        u_in = vec_in / len_in
-        u_out = vec_out / len_out
-
-        tangent_dist = min(200, len_in * 0.45, len_out * 0.45)
-        p_curve_start = Pbd - u_in * tangent_dist
-        p_curve_end = Pbd + u_out * tangent_dist
-
-        t_vals = np.linspace(0, 1, 30)
-        curve_pts = []
-        for t in t_vals:
-            pt_interp = (1 - t) ** 2 * p_curve_start + 2 * (1 - t) * t * Pbd + t ** 2 * p_curve_end
-            curve_pts.append(pt_interp)
-
-        full_path = [Pin] + curve_pts + [pt]
-        plotter.add_mesh(pv.lines_from_points(np.array(full_path)), color="brown", line_width=4)
-        legend_items.append(("Project trajectory", "brown"))
-
-        R_traj = np.linalg.norm(pt - p1) * 0.015
-        plotter.add_mesh(pv.Sphere(R_traj, p_curve_start), color="black")
-        plotter.add_mesh(pv.Sphere(R_traj, p_curve_end), color="black")
+        add_project_trajectory(plotter, Pin, Pbd, pt, np.linalg.norm(pt - p1) * 0.015, legend_items)
 
     if len(alignment_arc) > 1:
         for P in alignment_arc:
